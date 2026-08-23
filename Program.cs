@@ -13,6 +13,7 @@
 
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -82,6 +83,18 @@ namespace Polyclicker
                 Log.Line("WARNING: running inside app container '" + pkg
                          + "' - the data folder above is a virtualized copy,"
                          + " not the user's real one");
+            // The identity check alone is not enough: a sandbox can redirect
+            // the files WITHOUT granting package identity (measured here -
+            // the overlay served this exact path while the identity API said
+            // "not packaged"). The kernel's final path for a file just
+            // written is the one answer that can't be fooled, because it
+            // names where the bytes actually landed.
+            string backing = BackingPath(Log.File_);
+            if (backing != null
+                && !string.Equals(backing, Path.GetFullPath(Log.File_),
+                                  StringComparison.OrdinalIgnoreCase))
+                Log.Line("WARNING: the data folder is redirected - files"
+                         + " actually land in " + Path.GetDirectoryName(backing));
 
             var form = new MainForm();
             ListenForDisplacement(form);
@@ -121,6 +134,31 @@ namespace Polyclicker
                      ? sb.ToString() : "(unknown package)";
             }
             catch { return null; }      // API is Windows 8+; older is never packaged
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern uint GetFinalPathNameByHandleW(IntPtr h, StringBuilder path,
+                                                     uint len, uint flags);
+
+        // Where a file's bytes really live, from the kernel's point of view.
+        // Opened for write so a copy-on-write overlay resolves to the copy
+        // that receives this process's writes, not the original underneath.
+        static string BackingPath(string path)
+        {
+            try
+            {
+                using (var fs = new FileStream(path, FileMode.Open,
+                                               FileAccess.ReadWrite, FileShare.ReadWrite))
+                {
+                    var sb = new StringBuilder(1024);
+                    uint n = GetFinalPathNameByHandleW(
+                        fs.SafeFileHandle.DangerousGetHandle(), sb, 1024, 0);
+                    if (n == 0 || n >= 1024) return null;
+                    string p = sb.ToString();
+                    return p.StartsWith(@"\\?\") ? p.Substring(4) : p;
+                }
+            }
+            catch { return null; }      // no answer beats a startup crash
         }
 
         // A newer launch asked us to leave. Close through the form so the
