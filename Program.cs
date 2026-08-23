@@ -13,6 +13,8 @@
 
 using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -62,10 +64,24 @@ namespace Polyclicker
             System.Drawing.BufferedGraphicsManager.Current.MaximumBuffer =
                 SystemInformation.PrimaryMonitorSize;
 
+            // The data folder is named on every start because it is not always
+            // the one it looks like: launched from inside a packaged app
+            // (an MSIX terminal, launcher, or assistant), %APPDATA% is
+            // copy-on-write virtualized into that package's LocalCache, and
+            // the app runs against a silent fork of the user's settings.
+            // That happened here for days - same exe, same user, two
+            // diverging configs - and neither log could say which world it
+            // was in.
             Log.Line("started, pid " + Process.GetCurrentProcess().Id + ", exe of "
                      + System.IO.File.GetLastWriteTime(
                            Process.GetCurrentProcess().MainModule.FileName)
-                       .ToString("yyyy-MM-dd HH:mm"));
+                       .ToString("yyyy-MM-dd HH:mm")
+                     + ", data in " + AppConfig.Dir);
+            string pkg = ContainerPackage();
+            if (pkg != null)
+                Log.Line("WARNING: running inside app container '" + pkg
+                         + "' - the data folder above is a virtualized copy,"
+                         + " not the user's real one");
 
             var form = new MainForm();
             ListenForDisplacement(form);
@@ -81,6 +97,30 @@ namespace Polyclicker
                 try { Engine.ReleaseAllHeld(); } catch { }
                 Log.Line("exited");
             }
+        }
+
+        // Which MSIX package this process is running inside, or null for a
+        // normal launch. A plain exe started from a packaged app inherits
+        // its container, and with it the virtualized %APPDATA% - the one
+        // condition under which "my settings vanished" and "my settings are
+        // fine" are both true at once.
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern int GetCurrentPackageFullName(ref int length, StringBuilder name);
+
+        const int APPMODEL_ERROR_NO_PACKAGE = 15700;
+
+        static string ContainerPackage()
+        {
+            try
+            {
+                int len = 0;
+                if (GetCurrentPackageFullName(ref len, null) == APPMODEL_ERROR_NO_PACKAGE)
+                    return null;
+                var sb = new StringBuilder(len);
+                return GetCurrentPackageFullName(ref len, sb) == 0
+                     ? sb.ToString() : "(unknown package)";
+            }
+            catch { return null; }      // API is Windows 8+; older is never packaged
         }
 
         // A newer launch asked us to leave. Close through the form so the

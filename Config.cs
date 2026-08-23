@@ -171,6 +171,10 @@ namespace Polyclicker
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "Polyclicker");
                 Directory.CreateDirectory(d);
+                // _dir is set BEFORE the migrations: they log what they copy,
+                // and Log resolves this very property - with _dir still null
+                // that re-enters the getter and recurses to a stack overflow.
+                _dir = d;
                 // Newest previous name first, then the older ones, then the
                 // ancient beside-the-exe layout; the first folder that has
                 // data wins and the rest are skipped
@@ -179,7 +183,6 @@ namespace Polyclicker
                 MigrateFrom(Path.Combine(appData, "Multiclicker"), d);
                 MigrateFrom(Path.Combine(appData, "Multi Auto-Clicker"), d);
                 MigrateLegacy(d);
-                _dir = d;
                 return _dir;
             }
         }
@@ -199,6 +202,11 @@ namespace Polyclicker
                 System.IO.File.Copy(oldIni, newIni);
                 CopyAll(Path.Combine(src, "Macros"), Path.Combine(dest, "Macros"), "*.macro");
                 CopyAll(Path.Combine(src, "Profiles"), Path.Combine(dest, "Profiles"), "*.ini");
+                // Migration seeds a fresh folder with data that may be years
+                // stale, and an app that comes up half-configured looks broken
+                // in ways an empty one doesn't. The trail says where it came
+                // from.
+                Log.Line("migrated data from " + src);
             }
             catch { }   // a failed migration just means starting fresh
         }
@@ -221,6 +229,7 @@ namespace Polyclicker
                 System.IO.File.Copy(oldIni, newIni);
                 CopyAll(Path.Combine(src, "Macros"), Path.Combine(dest, "Macros"), "*.macro");
                 CopyAll(Path.Combine(src, "Profiles"), Path.Combine(dest, "Profiles"), "*.ini");
+                Log.Line("migrated data from beside the exe: " + src);
             }
             catch { }   // a failed migration just means starting fresh
         }
