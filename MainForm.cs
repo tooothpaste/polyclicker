@@ -341,12 +341,12 @@ namespace Polyclicker
             try { Directory.CreateDirectory(AppConfig.MacroDir); } catch { }
             string path = MacroFile.UniquePath(AppConfig.MacroDir, baseName);
 
-            // The record key itself and Escape only ever mean start/stop, so
-            // they never enter a take. The chord's modifiers DO record - a
-            // take full of Ctrl+clicks must keep its Ctrls - and the recorder
-            // trims just the presses that bracket the take.
+            // The record key itself only ever means start/stop, so it never
+            // enters a take. Everything else records - including Escape,
+            // which plenty of games use for real. The chord's modifiers DO
+            // record - a take full of Ctrl+clicks must keep its Ctrls - and
+            // the recorder trims just the presses that bracket the take.
             var ignore = new List<int>();
-            ignore.Add(0x1B);                          // Escape
             var chord = new List<int>();
             HotkeyCombo rec = HotkeyParser.Parse(cfg.RecordKey);
             if (rec.IsSet)
@@ -979,7 +979,6 @@ namespace Polyclicker
                 if (killActive) return;
                 if ((armedIndex >= 0 || Recorder.Recording) && Match(cfg.RecordKey, e))
                 { e.Consume = true; return; }
-                if (Recorder.Recording && e.Vk == 0x1B) { e.Consume = true; return; }
                 for (int i = 0; i < cfg.Slots.Count; i++)
                 {
                     SlotConfig s = cfg.Slots[i];
@@ -1017,14 +1016,6 @@ namespace Polyclicker
             {
                 e.Consume = true;
                 Post(delegate { ToggleRecording(); });
-                return;
-            }
-            // Escape also ends a take - it's the key people reach for - but is
-            // only ours while one is actually running
-            if (e.IsDown && Recorder.Recording && e.Vk == 0x1B)
-            {
-                e.Consume = true;
-                Post(delegate { StopRecordingFlow(); });
                 return;
             }
 

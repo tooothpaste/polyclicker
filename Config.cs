@@ -39,9 +39,28 @@ namespace Polyclicker
         public bool FlickFocus;                 // per-click: focus gate, click, focus back
         public bool HotkeyOff;                  // per-card lock, inverted on disk
         public bool KeepWhileLocked;            // lock blocks the hotkey only
-        public bool StopOnInput;                // any real input stops the card
+        public bool StopOnMouse;                // a real click or move stops it
+        public bool StopOnKeys;                 // a real keypress stops it
         public bool MacroRelative;              // replay positions relative to
                                                 // the window the take recorded
+        // Playback speed for macro cards, percent of the recorded pace.
+        // 100 plays the take as performed; 400 plays it four times as fast.
+        // The whole timeline scales - gaps and press lengths alike - so a
+        // gesture keeps its shape, just quicker.
+        //
+        // Capped at 20x. Measured: injecting one event costs ~0.6 ms on the
+        // input stack, so once a take's scaled gaps fall below that the
+        // playback is emission-bound and a higher setting changes nothing -
+        // every event still arrives, in order, just no faster. Recorded
+        // takes carry ~8-15 ms between pointer samples; 20x covers the whole
+        // range where the knob still buys speed, without a dead zone above.
+        public int MacroSpeed = 100;
+        public const int MacroSpeedMin = 10;
+        public const int MacroSpeedMax = 2000;
+        // Off: the take plays through once per hotkey press. On (the original
+        // behaviour, and the default): it repeats until stopped.
+        public bool MacroLoop = true;
+
         public string Color = "";               // card tint, by palette name
         public bool Collapsed;                  // rolled up to a single line
 
@@ -282,7 +301,7 @@ namespace Polyclicker
             s.Name      = Ini.Read(file, sec, "Name", "");
             s.Macro     = Ini.Read(file, sec, "Macro", "");
             s.Hotkey    = Ini.Read(file, sec, "Hotkey", "");
-            s.Interval  = Math.Max(1, Ini.ReadInt(file, sec, "Interval", 50));
+            s.Interval  = Math.Max(0, Ini.ReadInt(file, sec, "Interval", 50));
             s.Input     = Ini.Read(file, sec, "Input", "Left Click");
             s.CustomKey = Ini.Read(file, sec, "CustomKey", "");
             s.PosMode   = Ini.Read(file, sec, "PosMode", "Current Position");
@@ -302,8 +321,16 @@ namespace Polyclicker
             s.FlickFocus    = Ini.ReadBool(file, sec, "FlickFocus", false);
             s.HotkeyOff     = Ini.ReadBool(file, sec, "HotkeyOff", false);
             s.KeepWhileLocked = Ini.ReadBool(file, sec, "KeepWhileLocked", false);
-            s.StopOnInput   = Ini.ReadBool(file, sec, "StopOnInput", false);
+            // Stop-on-input split into mouse and keyboard in 1.1; a file from
+            // before the split seeds both sides from the old combined flag
+            bool legacyStop = Ini.ReadBool(file, sec, "StopOnInput", false);
+            s.StopOnMouse   = Ini.ReadBool(file, sec, "StopOnMouse", legacyStop);
+            s.StopOnKeys    = Ini.ReadBool(file, sec, "StopOnKeys", legacyStop);
             s.MacroRelative = Ini.ReadBool(file, sec, "MacroRelative", false);
+            s.MacroSpeed    = Math.Max(SlotConfig.MacroSpeedMin,
+                              Math.Min(SlotConfig.MacroSpeedMax,
+                                       Ini.ReadInt(file, sec, "MacroSpeed", 100)));
+            s.MacroLoop     = Ini.ReadBool(file, sec, "MacroLoop", true);
             s.Color         = Ini.Read(file, sec, "Color", "").Trim().ToLowerInvariant();
             s.Collapsed     = Ini.ReadBool(file, sec, "Collapsed", false);
 
@@ -317,6 +344,10 @@ namespace Polyclicker
             bool ok = false;
             foreach (string v in ValidInputs) if (v == s.Input) { ok = true; break; }
             if (!ok) s.Input = "Left Click";
+            // Zero is a real setting for a macro's loop gap (replay
+            // back-to-back); for a clicker it would be a 10k cps request,
+            // so the old floor stays for everything else
+            if (!s.IsMacro) s.Interval = Math.Max(1, s.Interval);
             return s;
         }
 
@@ -416,8 +447,11 @@ namespace Polyclicker
                 sb.AppendLine("FlickFocus=" + (s.FlickFocus ? "1" : "0"));
                 sb.AppendLine("HotkeyOff=" + (s.HotkeyOff ? "1" : "0"));
                 sb.AppendLine("KeepWhileLocked=" + (s.KeepWhileLocked ? "1" : "0"));
-                sb.AppendLine("StopOnInput=" + (s.StopOnInput ? "1" : "0"));
+                sb.AppendLine("StopOnMouse=" + (s.StopOnMouse ? "1" : "0"));
+                sb.AppendLine("StopOnKeys=" + (s.StopOnKeys ? "1" : "0"));
                 sb.AppendLine("MacroRelative=" + (s.MacroRelative ? "1" : "0"));
+                sb.AppendLine("MacroSpeed=" + s.MacroSpeed.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("MacroLoop=" + (s.MacroLoop ? "1" : "0"));
                 sb.AppendLine("Color=" + s.Color);
                 sb.AppendLine("Collapsed=" + (s.Collapsed ? "1" : "0"));
             }

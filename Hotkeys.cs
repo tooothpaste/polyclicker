@@ -88,6 +88,23 @@ namespace Polyclicker
             {
                 char ch = char.ToUpperInvariant(name[0]);
                 if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return (ushort)ch;
+                // The punctuation row, by the character on the key (US
+                // layout). None of these collide with the modifier prefixes
+                // the spec parser strips - OEM_PLUS deliberately reads "="
+                switch (ch)
+                {
+                    case ';': return 0xBA;
+                    case '=': return 0xBB;
+                    case ',': return 0xBC;
+                    case '-': return 0xBD;
+                    case '.': return 0xBE;
+                    case '/': return 0xBF;
+                    case '`': return 0xC0;
+                    case '[': return 0xDB;
+                    case '\\': return 0xDC;
+                    case ']': return 0xDD;
+                    case '\'': return 0xDE;
+                }
             }
             switch (name.ToLowerInvariant())
             {
@@ -136,6 +153,18 @@ namespace Polyclicker
                 case "numpadsub": return 0x6D; case "numpaddiv": return 0x6F;
                 case "numpaddot": return 0x6E;
             }
+            // The last-resort names VkToName mints ("VKDE") parse back here,
+            // so a key with no friendly name still round-trips through the
+            // INI instead of silently unbinding on the next load
+            if (name.Length >= 3 && (name[0] == 'V' || name[0] == 'v')
+                                 && (name[1] == 'K' || name[1] == 'k'))
+            {
+                int hex;
+                if (int.TryParse(name.Substring(2), System.Globalization.NumberStyles.HexNumber,
+                                 System.Globalization.CultureInfo.InvariantCulture, out hex)
+                    && hex > 0 && hex < 256)
+                    return (ushort)hex;
+            }
             return 0;
         }
 
@@ -166,6 +195,22 @@ namespace Polyclicker
                 case 0x12: return "Alt";
                 case 0x5B: return "Win";
                 case 0x5C: return "RWin";
+                case 0x6A: return "NumpadMult";
+                case 0x6B: return "NumpadAdd";
+                case 0x6D: return "NumpadSub";
+                case 0x6E: return "NumpadDot";
+                case 0x6F: return "NumpadDiv";
+                case 0xBA: return ";";
+                case 0xBB: return "=";
+                case 0xBC: return ",";
+                case 0xBD: return "-";
+                case 0xBE: return ".";
+                case 0xBF: return "/";
+                case 0xC0: return "`";
+                case 0xDB: return "[";
+                case 0xDC: return "\\";
+                case 0xDD: return "]";
+                case 0xDE: return "'";
             }
             if (vk >= 0x60 && vk <= 0x69) return "Numpad" + (vk - 0x60);
             return vk == 0 ? "" : "VK" + vk.ToString("X2");

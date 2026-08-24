@@ -267,7 +267,9 @@ namespace Polyclicker
         readonly CheckBox flickChk = new CheckBox();
         readonly NumberBox holdEdit = new NumberBox();
         readonly CheckBox lockChk = new CheckBox();
-        readonly CheckBox stopInputChk = new CheckBox();
+        readonly CheckBox stopMouseChk = new CheckBox();
+        readonly CheckBox stopKeysChk = new CheckBox();
+        readonly NumberBox gapEdit = new NumberBox();
         Label holdHint;
 
         public bool ModeChanged;
@@ -275,7 +277,12 @@ namespace Polyclicker
         public AdvancedDialog(SlotConfig cfg, string cardLabel) : base(cardLabel + " - Advanced")
         {
             o = cfg;
+            // The dialog shows only what the card's input type actually uses:
+            // a macro has no hold or position of its own, a key has no
+            // pointer, and only mouse clicks can be posted into a background
+            // window. Hidden settings keep their stored values untouched.
             bool isMacro = cfg.IsMacro;
+            bool isMouse = !isMacro && !cfg.IsCustomKey;
             string unit = isMacro ? "repeats" : "clicks";
 
             // One grid for the whole dialog. Every group is positioned from a
@@ -378,16 +385,23 @@ namespace Polyclicker
             cy += 26;
 
             // Keep-running: the card clicks the gate window in the background
-            // instead of pausing when the user switches away.
-            flickChk.Text = "Keep running when I switch away";
-            flickChk.SetBounds(ixL, cy, Iw, 22);
-            flickChk.Checked = cfg.FlickFocus;
-            Controls.Add(flickChk);
-            flickChk.BringToFront();
-            cy += 26;
-            cy = Muted("Anywhere runs it everywhere. With a window set, starting needs it"
+            // instead of pausing when the user switches away. Posting clicks
+            // is the mouse path only - macros and keys can't run from behind.
+            if (isMouse)
+            {
+                flickChk.Text = "Keep running when I switch away";
+                flickChk.SetBounds(ixL, cy, Iw, 22);
+                flickChk.Checked = cfg.FlickFocus;
+                Controls.Add(flickChk);
+                flickChk.BringToFront();
+                cy += 26;
+            }
+            cy = Muted(isMouse
+                ? "Anywhere runs it everywhere. With a window set, starting needs it"
                 + " in front, and it pauses when you switch away - unless you keep it"
-                + " running, which clicks it in the background.",
+                + " running, which clicks it in the background."
+                : "Anywhere runs it everywhere. With a window set, starting needs it"
+                + " in front, and it pauses when you switch away.",
                 ixL, cy, Iw).Bottom;
             gWin.Size = new Size(Gw, cy + Pad - yL);
             yL = gWin.Bottom + Gap;
@@ -411,54 +425,77 @@ namespace Polyclicker
             cy += 25 + 6;
             cy = Muted("0 means no limit. With both set, whichever hits first.",
                        xR + 88, cy, 292).Bottom + 4;
-            stopInputChk.Text = "Stop when I use the mouse or keyboard";
-            stopInputChk.SetBounds(ixR, cy, Iw, 22);
-            stopInputChk.Checked = cfg.StopOnInput;
-            Controls.Add(stopInputChk);
-            stopInputChk.BringToFront();
+            stopMouseChk.Text = "Stop when I use the mouse";
+            stopMouseChk.SetBounds(ixR, cy, Iw, 22);
+            stopMouseChk.Checked = cfg.StopOnMouse;
+            Controls.Add(stopMouseChk);
+            stopMouseChk.BringToFront();
             cy += 26;
-            cy = Muted("Nudging the pointer a few pixels is ignored; real movement,"
-                + " a click, or a key stops it at once.", ixR, cy, Iw).Bottom;
+            stopKeysChk.Text = "Stop when I use the keyboard";
+            stopKeysChk.SetBounds(ixR, cy, Iw, 22);
+            stopKeysChk.Checked = cfg.StopOnKeys;
+            Controls.Add(stopKeysChk);
+            stopKeysChk.BringToFront();
+            cy += 26;
+            cy = Muted(isMacro
+                ? "A real click, scroll, or key stops it at once. Pointer movement"
+                + " doesn't count while the take is driving the pointer."
+                : "Nudging the pointer a few pixels is ignored; real movement,"
+                + " a click, a scroll, or a key stops it at once.", ixR, cy, Iw).Bottom;
             gStop.Size = new Size(Gw, cy + Pad - yR);
             yR = gStop.Bottom + Gap;
 
-            // --- Each click (right) ----------------------------------------
+            // --- Each click (right; clicks and keys) / Looping (macros) -----
+            // A macro replays its own press lengths, so it gets the looping
+            // settings here instead: the gap between repeats, gap 0 = replay
+            // back-to-back. The loop toggle and speed live on the card.
             var gClick = new GroupBox();
-            gClick.Text = " Each click ";
+            gClick.Text = isMacro ? " Looping " : " Each click ";
             gClick.Location = new Point(xR, yR);
             Controls.Add(gClick);
             cy = yR + CapH;
-            Plain("Hold for", ixR, cy + 4, 64);
-            holdEdit.SetBounds(xR + 82, cy, 46, 25);
-            holdEdit.Text = cfg.HoldPercent.ToString();
-            holdEdit.ReadOnly = isMacro;    // macros replay their own timings
-            Controls.Add(holdEdit); holdEdit.BringToFront();
-            Plain("% of the interval", xR + 134, cy + 4, 116);
-            // Built by hand, not Muted(): that sizes to its text, and an empty
-            // string would give a 4 px tall label the live hint can't show in
-            holdHint = new Label();
-            holdHint.ForeColor = Color.Gray;
-            holdHint.SetBounds(xR + 256, cy + 4, 124, 20);
-            Controls.Add(holdHint);
-            holdHint.BringToFront();
-            // Percent is the setting, but milliseconds is what a person
-            // pictures - show both, live
-            EventHandler refreshHint = delegate
+            if (isMacro)
             {
-                int pct;
-                if (!int.TryParse(holdEdit.Text, out pct)) pct = 0;
-                pct = Math.Max(0, Math.Min(90, pct));
-                holdHint.Text = pct == 0
-                    ? "instant (default)"
-                    : "= " + (Math.Max(1, cfg.Interval) * pct / 100) + " ms per click";
-            };
-            holdEdit.TextChanged += refreshHint;
-            refreshHint(null, EventArgs.Empty);
-            cy += 25 + 6;
-            cy = Muted(isMacro
-                ? "Macros replay the press lengths they recorded."
-                : "How long the button stays down. As a share of the interval it"
-                + " keeps its feel when you change the click rate.", ixR, cy, Iw).Bottom;
+                Plain("Loop gap", ixR, cy + 4, 64);
+                gapEdit.SetBounds(xR + 82, cy, 56, 25);
+                gapEdit.Text = cfg.Interval.ToString();
+                Controls.Add(gapEdit); gapEdit.BringToFront();
+                Plain("ms", xR + 144, cy + 4, 26);
+                cy += 25 + 6;
+                cy = Muted("The pause between repeats when the card loops."
+                    + " 0 replays back-to-back.", ixR, cy, Iw).Bottom;
+            }
+            else
+            {
+                Plain("Hold for", ixR, cy + 4, 64);
+                holdEdit.SetBounds(xR + 82, cy, 46, 25);
+                holdEdit.Text = cfg.HoldPercent.ToString();
+                Controls.Add(holdEdit); holdEdit.BringToFront();
+                Plain("% of the interval", xR + 134, cy + 4, 116);
+                // Built by hand, not Muted(): that sizes to its text, and an empty
+                // string would give a 4 px tall label the live hint can't show in
+                holdHint = new Label();
+                holdHint.ForeColor = Color.Gray;
+                holdHint.SetBounds(xR + 256, cy + 4, 124, 20);
+                Controls.Add(holdHint);
+                holdHint.BringToFront();
+                // Percent is the setting, but milliseconds is what a person
+                // pictures - show both, live
+                EventHandler refreshHint = delegate
+                {
+                    int pct;
+                    if (!int.TryParse(holdEdit.Text, out pct)) pct = 0;
+                    pct = Math.Max(0, Math.Min(90, pct));
+                    holdHint.Text = pct == 0
+                        ? "instant (default)"
+                        : "= " + (Math.Max(1, cfg.Interval) * pct / 100) + " ms per click";
+                };
+                holdEdit.TextChanged += refreshHint;
+                refreshHint(null, EventArgs.Empty);
+                cy += 25 + 6;
+                cy = Muted("How long the button stays down. As a share of the interval it"
+                    + " keeps its feel when you change the click rate.", ixR, cy, Iw).Bottom;
+            }
             gClick.Size = new Size(Gw, cy + Pad - yR);
             yR = gClick.Bottom + Gap;
 
@@ -473,41 +510,43 @@ namespace Polyclicker
             jitterEdit.Text = cfg.JitterMs.ToString();
             Controls.Add(jitterEdit); jitterEdit.BringToFront();
             Plain("ms", xR + 148, cy + 4, 26);
-            Plain("Position ±", xR + 206, cy + 4, 76);
-            posJitEdit.SetBounds(xR + 284, cy, 50, 25);
-            posJitEdit.Text = cfg.PosJitter.ToString();
-            posJitEdit.ReadOnly = isMacro;      // ReadOnly keeps theme colors; Enabled=false goes unreadable in dark
-            Controls.Add(posJitEdit); posJitEdit.BringToFront();
-            Plain("px", xR + 340, cy + 4, 26);
+            if (isMouse)
+            {
+                Plain("Position ±", xR + 206, cy + 4, 76);
+                posJitEdit.SetBounds(xR + 284, cy, 50, 25);
+                posJitEdit.Text = cfg.PosJitter.ToString();
+                Controls.Add(posJitEdit); posJitEdit.BringToFront();
+                Plain("px", xR + 340, cy + 4, 26);
+            }
             cy += 25 + 6;
-            cy = Muted(isMacro
-                ? "0 = exact. Position isn't randomised for macros - they replay the positions they recorded."
-                : "0 = exact timing and position. Position needs Fixed Position; it is"
-                + " ignored when following the mouse.", ixR, cy, Iw).Bottom;
+            cy = Muted(isMouse
+                ? "0 = exact timing and position. Position needs Fixed Position; it is"
+                + " ignored when following the mouse."
+                : "0 = exact timing.", ixR, cy, Iw).Bottom;
             gRand.Size = new Size(Gw, cy + Pad - yR);
             yR = gRand.Bottom + Gap;
 
             // --- Misc (left, under the groups) -----------------------------
-            restoreChk.Text = isMacro
-                ? "Put the cursor back afterwards (not used by macros)"
-                : "Put the cursor back afterwards (fixed-position clicking only)";
-            restoreChk.SetBounds(xL + 2, yL, Gw, 22);
-            restoreChk.Checked = cfg.RestoreCursor;
-            Gate(restoreChk, !isMacro);
-            Controls.Add(restoreChk);
-            yL += 26;
-
-            // Macro-only: replay anchored to wherever the window is now rather
-            // than to the screen. The recording carries the window's position
-            // and size; a size mismatch warns on the card when playback starts.
-            relChk.Text = isMacro
-                ? "Follow the window: replay positions relative to where it is now"
-                : "Follow the window (macros only - they carry window info)";
-            relChk.SetBounds(xL + 2, yL, Gw, 22);
-            relChk.Checked = cfg.MacroRelative;
-            Gate(relChk, isMacro);
-            Controls.Add(relChk);
-            yL += 22 + Gap + 4;
+            if (isMouse)
+            {
+                restoreChk.Text = "Put the cursor back afterwards (fixed-position clicking only)";
+                restoreChk.SetBounds(xL + 2, yL, Gw, 22);
+                restoreChk.Checked = cfg.RestoreCursor;
+                Controls.Add(restoreChk);
+                yL += 26;
+            }
+            if (isMacro)
+            {
+                // Replay anchored to wherever the window is now rather than
+                // to the screen. The recording carries the window's position
+                // and size; a size mismatch warns on the card at playback.
+                relChk.Text = "Follow the window: replay positions relative to where it is now";
+                relChk.SetBounds(xL + 2, yL, Gw, 22);
+                relChk.Checked = cfg.MacroRelative;
+                Controls.Add(relChk);
+                yL += 26;
+            }
+            yL += Gap;
 
             int y = Math.Max(yL, yR);
             int fullW = Gw * 2 + Gap;
@@ -555,34 +594,31 @@ namespace Polyclicker
             }
         }
 
-        // A "disabled" checkbox that stays readable: it keeps its colors but
-        // stops toggling. Enabled=false hands painting to the system, which is
-        // unreadable on the dark background.
-        static void Gate(CheckBox c, bool usable)
-        {
-            c.AutoCheck = usable;
-            c.Tag = usable ? null : "gated";
-            c.Cursor = usable ? Cursors.Default : Cursors.No;
-        }
-
         void Apply()
         {
             string mode = modeDDL.Text.StartsWith("Hold") ? "Hold" : "Toggle";
             ModeChanged = o.Mode != mode;
             o.Mode = mode;
             o.WinTitle = winValue;
+            // Only controls the dialog actually showed write back - a hidden
+            // setting keeps whatever the card had stored
             int v;
             o.StopClicks  = int.TryParse(clicksEdit.Text, out v) ? Math.Max(0, v) : 0;
             o.StopSeconds = int.TryParse(secsEdit.Text, out v) ? Math.Max(0, v) : 0;
             o.JitterMs    = int.TryParse(jitterEdit.Text, out v) ? Math.Max(0, v) : 0;
-            o.PosJitter   = int.TryParse(posJitEdit.Text, out v) ? Math.Max(0, v) : 0;
-            o.HoldPercent = int.TryParse(holdEdit.Text, out v) ? Math.Max(0, Math.Min(90, v)) : 0;
+            if (posJitEdit.Parent != null)
+                o.PosJitter = int.TryParse(posJitEdit.Text, out v) ? Math.Max(0, v) : 0;
+            if (holdEdit.Parent != null)
+                o.HoldPercent = int.TryParse(holdEdit.Text, out v) ? Math.Max(0, Math.Min(90, v)) : 0;
+            if (gapEdit.Parent != null)
+                o.Interval = int.TryParse(gapEdit.Text, out v) ? Math.Max(0, v) : 0;
             o.KeepWhileLocked = lockChk.Checked;
-            o.StopOnInput = stopInputChk.Checked;
-            o.RestoreCursor = restoreChk.Checked;
+            o.StopOnMouse = stopMouseChk.Checked;
+            o.StopOnKeys = stopKeysChk.Checked;
+            if (restoreChk.Parent != null) o.RestoreCursor = restoreChk.Checked;
             o.FocusWindow = focusChk.Checked;
-            o.FlickFocus = flickChk.Checked;
-            if (relChk.AutoCheck) o.MacroRelative = relChk.Checked;
+            if (flickChk.Parent != null) o.FlickFocus = flickChk.Checked;
+            if (relChk.Parent != null) o.MacroRelative = relChk.Checked;
         }
     }
 

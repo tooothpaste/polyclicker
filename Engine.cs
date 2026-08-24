@@ -136,6 +136,7 @@ namespace Polyclicker
         const int WH_MOUSE_LL = 14;
         const int WM_LBUTTONUP = 0x0202, WM_RBUTTONUP = 0x0205,
                   WM_MBUTTONUP = 0x0208, WM_XBUTTONUP = 0x020C;
+        const int WM_MOUSEWHEEL = 0x020A, WM_MOUSEHWHEEL = 0x020E;
         static IntPtr obsHook;
         static HookProc obsProc;
         static Thread obsThread;
@@ -171,45 +172,80 @@ namespace Polyclicker
         static long ParkedSince;
 
         // --- stop on input --------------------------------------------------
-        // A card can ask to stop the moment the user does anything real: a
-        // button, a key, or moving the pointer more than a nudge. Armed only
-        // while some running slot wants it, so the per-move cost is one flag
-        // read for everyone else.
+        // A card can ask to stop the moment the user does something real,
+        // mouse and keyboard separately: a button or a real pointer move more
+        // than a nudge on one side, any key on the other. Armed only while
+        // some running slot wants that side, so the per-move cost is one
+        // flag read for everyone else.
         const int WM_MOUSEMOVE = 0x0200;
         static readonly int OffX = (int)Marshal.OffsetOf(typeof(MSLLHOOKSTRUCT), "X");
         static readonly int OffY = (int)Marshal.OffsetOf(typeof(MSLLHOOKSTRUCT), "Y");
         static readonly int OffExtra = (int)Marshal.OffsetOf(typeof(MSLLHOOKSTRUCT), "dwExtraInfo");
         const int StopMoveGrace = 15;           // px a pointer may wander free
-        static volatile bool stopInputArmed;
+        static volatile bool stopMouseArmed, stopKeysArmed;
         static long siArmedTick;                // settle: the starting press itself
         static long siAnchor = long.MinValue;   // hook thread only
         static long siAnchorTick;               //   "
+        // How many macro slots are replaying A TAKE right now - the event
+        // pass only, not the loop gap or the wait for a gated window. While
+        // a take drives the pointer, a real move event's coordinates read as
+        // "wherever the take just put the cursor, plus the hand's nudge" - a
+        // phantom jump of however far the take moved between two touches of
+        // a resting hand. Move-based stopping is blind while this is
+        // non-zero; buttons, wheel, and keys still stop, and they are the
+        // deliberate signals anyway. Between passes the pointer is at rest,
+        // so a loop gap or a gate wait leaves move-stopping live - counting
+        // the whole run kept every card's move-stop dark for as long as a
+        // gated macro sat waiting for its window.
+        static int macroDriving;                // Interlocked
+        // When the last replay pass ended. Moves stay blind for a settling
+        // window after: the anchor logic gives the first move after a stale
+        // spell one free re-anchor, but a pass shorter than the anchor's own
+        // 400 ms window would leave a live pre-pass anchor pointing at
+        // wherever the hand was BEFORE the take teleported the pointer, and
+        // the resting hand's next nudge read as a phantom jump.
+        static long macroQuietTick;             // Interlocked
+
+        static bool MacroBlind()
+        {
+            if (Interlocked.CompareExchange(ref macroDriving, 0, 0) != 0) return true;
+            long now;
+            QueryPerformanceCounter(out now);
+            return now - Interlocked.Read(ref macroQuietTick) < Freq / 2;
+        }
 
         // Recomputed on every start and stop, next to the spot list.
         static void ArmStopOnInput()
         {
-            bool want = false;
+            bool wantMouse = false, wantKeys = false;
             lock (Running)
                 foreach (Slot s in Running.Values)
-                    if (s.Cfg.StopOnInput) { want = true; break; }
-            if (want && !stopInputArmed)
+                {
+                    if (s.Cfg.StopOnMouse) wantMouse = true;
+                    if (s.Cfg.StopOnKeys) wantKeys = true;
+                    if (wantMouse && wantKeys) break;
+                }
+            if ((wantMouse && !stopMouseArmed) || (wantKeys && !stopKeysArmed))
             {
                 QueryPerformanceCounter(out siArmedTick);
                 siAnchor = long.MinValue;       // re-anchor at the next move
             }
-            stopInputArmed = want;
+            stopMouseArmed = wantMouse;
+            stopKeysArmed = wantKeys;
         }
 
-        // Real input arrived: stop every running card that asked for this.
-        // Not StopAll - cards that didn't opt in keep going.
-        static void StopForInput()
+        // Real input arrived: stop every running card that asked for THIS
+        // kind of input. Not StopAll - cards that didn't opt in keep going.
+        static void StopForInput(bool mouse)
         {
             // The press that STARTED the card is not the user interrupting it,
             // and neither is the hand still settling from reaching the hotkey
             long now;
             QueryPerformanceCounter(out now);
             if (now - Interlocked.Read(ref siArmedTick) < Freq * 3 / 10) return;
-            stopInputArmed = false;
+            // Disarmed at once so the event flood before the stops land
+            // can't fire again; the worker rearms for whatever keeps running
+            if (mouse) stopMouseArmed = false; else stopKeysArmed = false;
             // The actual stopping is handed off: this runs inside the LL
             // mouse hook callback, and Stop -> ReturnCursor takes PointerLock,
             // which a pace thread can hold across its SendInput retry loop.
@@ -221,9 +257,11 @@ namespace Polyclicker
                 var ids = new List<int>();
                 lock (Running)
                     foreach (KeyValuePair<int, Slot> kv in Running)
-                        if (kv.Value.Cfg.StopOnInput) ids.Add(kv.Key);
+                        if (mouse ? kv.Value.Cfg.StopOnMouse : kv.Value.Cfg.StopOnKeys)
+                            ids.Add(kv.Key);
                 // Each worker's own exit raises Stopped and the UI catches up
                 foreach (int id in ids) Stop(id);
+                ArmStopOnInput();
             });
         }
 
@@ -231,7 +269,7 @@ namespace Polyclicker
         // real key-down that wasn't one of our hotkeys.
         public static void NoteUserKey()
         {
-            if (stopInputArmed) StopForInput();
+            if (stopKeysArmed) StopForInput(false);
         }
 
         static IntPtr ObserverCallback(int code, IntPtr wParam, IntPtr lParam)
@@ -241,10 +279,12 @@ namespace Polyclicker
                 int m = wParam.ToInt32();
                 if (m == WM_MOUSEMOVE)
                 {
-                    // Only ever inspected while some card wants stop-on-input;
-                    // for everyone else a move costs one flag read.
-                    if (stopInputArmed
-                        && Marshal.ReadIntPtr(lParam, OffExtra) == IntPtr.Zero)
+                    // Only ever inspected while some card wants stop-on-mouse;
+                    // for everyone else a move costs one flag read. Blind
+                    // while a macro replays - see macroDriving above.
+                    if (stopMouseArmed
+                        && Marshal.ReadIntPtr(lParam, OffExtra) == IntPtr.Zero
+                        && !MacroBlind())
                     {
                         int mx = Marshal.ReadInt32(lParam, OffX);
                         int my = Marshal.ReadInt32(lParam, OffY);
@@ -271,10 +311,21 @@ namespace Polyclicker
                                 int ax = (int)(siAnchor >> 32), ay = (int)(uint)siAnchor;
                                 if (Math.Abs(mx - ax) > StopMoveGrace
                                  || Math.Abs(my - ay) > StopMoveGrace)
-                                    StopForInput();
+                                    StopForInput(true);
                             }
                         }
                     }
+                    return CallNextHookEx(obsHook, code, wParam, lParam);
+                }
+                if (m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL)
+                {
+                    // Scrolling is the user's hand on the mouse too, and like
+                    // a press it is unambiguous - no anchor, no grace beyond
+                    // the settle window. A take replaying a recorded scroll
+                    // carries SelfMark and is not the user.
+                    if (stopMouseArmed
+                        && Marshal.ReadIntPtr(lParam, OffExtra) == IntPtr.Zero)
+                        StopForInput(true);
                     return CallNextHookEx(obsHook, code, wParam, lParam);
                 }
                 bool isUp = m == WM_LBUTTONUP || m == WM_RBUTTONUP
@@ -327,7 +378,7 @@ namespace Polyclicker
                         if (isDown) userButtons |= bit;
                         else userButtons &= ~bit;
                         // A real press is unambiguous - no grace needed
-                        if (isDown && stopInputArmed) StopForInput();
+                        if (isDown && stopMouseArmed) StopForInput(true);
                     }
                 }
             }
@@ -623,6 +674,11 @@ namespace Polyclicker
             // instead of pacing clicks; LoopGapTicks is the pause between runs.
             public Ev[] Macro;
             public long LoopGapTicks;
+            // Multiplier applied to every event offset: 100/MacroSpeed,
+            // snapshotted at start like the rest of the config. The loop gap
+            // is NOT scaled - it is the user's own pause setting, not part of
+            // the recorded performance.
+            public double SpeedInv = 1.0;
             // Window-relative playback: recorded positions shift by however far
             // the reference window has moved since the take. Recomputed at each
             // loop start, so dragging the window mid-run stays aligned.
@@ -910,8 +966,12 @@ namespace Polyclicker
             }
 
             s.LoopGapTicks = (long)(Freq * (Math.Max(0, cfg.Interval) / 1000.0));
+            s.SpeedInv = 100.0 / Math.Max(SlotConfig.MacroSpeedMin,
+                                 Math.Min(SlotConfig.MacroSpeedMax, cfg.MacroSpeed));
             s.JitterTicks = (long)(Freq * (cfg.JitterMs / 1000.0));
             s.Limit = cfg.StopClicks;
+            // Loop off means exactly one pass, whatever the repeat limit says
+            if (!cfg.MacroLoop) s.Limit = 1;
             if (cfg.StopSeconds > 0)
             {
                 long now; QueryPerformanceCounter(out now);
@@ -921,6 +981,10 @@ namespace Polyclicker
             lock (Running) Running[id] = s;
             lock (Live) Live.Add(s);        // exit/crash paths can see it now
             ArmStopOnInput();
+            // The move-based stop detector goes blind while a take is
+            // actually replaying - playback teleporting the pointer poisons
+            // every coordinate a real move event carries. PlayMacro raises
+            // macroDriving around each event pass.
 
             s.Worker = new Thread(delegate() { PlayMacro(s, id); });
             s.Worker.IsBackground = true;
@@ -1130,6 +1194,11 @@ namespace Polyclicker
             // per-click restore inside the pace loop is unaffected.
             lock (PointerLock)
             {
+                // A macro never manages a home of its own - a RestoreCursor
+                // left set from the card's clicker days would teleport the
+                // pointer to wherever some PREVIOUS clicker run last saw the
+                // hand, seconds or minutes stale.
+                if (s.Macro != null) return;
                 if (!s.Cfg.RestoreCursor || !HomeValid) return;
                 // Cleared BEFORE the move, not after: a conversion landing in
                 // between is followed by this restore anyway, so the cursor
@@ -1599,27 +1668,44 @@ namespace Polyclicker
                     }
 
                     bool aborted = false;
-                    for (int i = 0; i < evs.Length && s.Run; i++)
+                    // Blind for exactly this pass (plus the settling window
+                    // MacroBlind adds): the take is about to teleport the
+                    // pointer, so real move deltas landing meanwhile carry
+                    // poisoned coordinates. The gap and gate waits outside
+                    // this block keep move-stopping live while the pointer
+                    // is at rest.
+                    Interlocked.Increment(ref macroDriving);
+                    try
                     {
-                        long due = start + evs[i].Off;
-                        while (s.Run)
+                        for (int i = 0; i < evs.Length && s.Run; i++)
                         {
-                            long now;
-                            QueryPerformanceCounter(out now);
-                            long remain = due - now;
-                            if (remain <= 0) break;
-                            Wait(timer, Math.Min(remain * msPerTick, 30.0));   // sliced: stop within ~30 ms
+                            long due = start + (long)(evs[i].Off * s.SpeedInv);
+                            while (s.Run)
+                            {
+                                long now;
+                                QueryPerformanceCounter(out now);
+                                long remain = due - now;
+                                if (remain <= 0) break;
+                                Wait(timer, Math.Min(remain * msPerTick, 30.0));   // sliced: stop within ~30 ms
+                            }
+                            if (!s.Run) break;
+                            // Per event, not only between loops: this loop's own
+                            // clicks activate the target window, so a check that
+                            // waits for the loop to finish reads the gate as open
+                            // again the instant our click re-fronts it - alt-tab
+                            // away from a gated macro and it stole focus straight
+                            // back. Aborting here leaves the user's window alone;
+                            // ReleaseHeld below lets go of anything mid-gesture.
+                            if (!MayFire(s)) { aborted = true; break; }
+                            Emit(s, evs[i], one);
                         }
-                        if (!s.Run) break;
-                        // Per event, not only between loops: this loop's own
-                        // clicks activate the target window, so a check that
-                        // waits for the loop to finish reads the gate as open
-                        // again the instant our click re-fronts it - alt-tab
-                        // away from a gated macro and it stole focus straight
-                        // back. Aborting here leaves the user's window alone;
-                        // ReleaseHeld below lets go of anything mid-gesture.
-                        if (!MayFire(s)) { aborted = true; break; }
-                        Emit(s, evs[i], one);
+                    }
+                    finally
+                    {
+                        long qt;
+                        QueryPerformanceCounter(out qt);
+                        Interlocked.Exchange(ref macroQuietTick, qt);
+                        Interlocked.Decrement(ref macroDriving);
                     }
                     ReleaseHeld(s, one);
                     if (!s.Run) break;

@@ -35,7 +35,7 @@ namespace Polyclicker
     {
         None, Name, Gear, Rec, Lock, Remove, Dup, Color, Min, Grip,
         Hotkey, Interval, Input, Pos, XBox, YBox, Pick, Preview,
-        MacroSel, Rename, DelMacro, Key
+        MacroSel, Rename, DelMacro, Key, Loop, Speed
     }
 
     // The chip icons, drawn as strokes rather than font glyphs. Text glyphs
@@ -141,6 +141,18 @@ namespace Polyclicker
                         g.DrawEllipse(p, cx - 3f, cy - 5.4f, 6f, 6f);
                         g.DrawLine(p, cx - 2.1f, cy - 0.4f, cx, cy + 4.6f);
                         g.DrawLine(p, cx + 2.1f, cy - 0.4f, cx, cy + 4.6f);
+                        break;
+                    case "loop":
+                        // circular arrow: repeats until stopped
+                        g.DrawArc(p, cx - 4.2f, cy - 4.2f, 8.4f, 8.4f, -60f, 300f);
+                        g.DrawLine(p, cx - 2.1f, cy - 3.6f, cx - 3.1f, cy - 0.8f);
+                        g.DrawLine(p, cx - 2.1f, cy - 3.6f, cx - 5.1f, cy - 4.2f);
+                        break;
+                    case "once":
+                        // straight arrow: plays through a single time
+                        g.DrawLine(p, cx - 4.6f, cy, cx + 4.2f, cy);
+                        g.DrawLine(p, cx + 4.2f, cy, cx + 1.4f, cy - 2.8f);
+                        g.DrawLine(p, cx + 4.2f, cy, cx + 1.4f, cy + 2.8f);
                         break;
                     case "target":
                         g.DrawEllipse(p, cx - 3.2f, cy - 3.2f, 6.4f, 6.4f);
@@ -488,13 +500,15 @@ namespace Polyclicker
                 ? "  (" + s.GateShort() + (c.GateMissing ? " isn't open" : "") + ")" : "";
             if (c.Recording)
             {
-                text = "⏺ Recording - " + c.TakeEvents + " events  (stop: " + RecordKeyName + " or Esc)";
+                text = "⏺ Recording - " + c.TakeEvents + " events  (stop: " + RecordKeyName + ")";
                 color = Theme.NoticeRed; bold = true;
             }
             else if (running)
             {
                 double goal = s.Interval > 0 ? 1000.0 / s.Interval : 0;
-                text = (s.IsMacro ? "▶ Playing"
+                text = (s.IsMacro
+                     ? "▶ Playing" + (s.MacroSpeed != 100
+                            ? " at " + (s.MacroSpeed / 100.0).ToString("0.##") + "×" : "")
                      : "▶ " + actualCps.ToString("0.#") + " / " + goal.ToString("0.#") + " cps") + egate;
                 color = RunGreen; bold = true;
             }
@@ -682,16 +696,31 @@ namespace Polyclicker
             string hkText = s.Hotkey.Trim().Length > 0 ? HotkeyParser.Parse(s.Hotkey).ToString() : "None";
             int hkW = Fit(hkText, Font, 88, 16, 44);
             int inW = Fit(s.Input, Font, 150, ComboPad, 60);
-            string ivLabel = s.IsMacro ? "Loop gap (ms)" : "Interval (ms)";
-            SpreadRow(lineA, L, R, hit, new RowGroup[]
-            {
-                new RowGroup(new RowItem("Hotkey", El.None, LabelW("Hotkey"), 4),
-                             new RowItem(null, El.Hotkey, hkW, 0)),
-                new RowGroup(new RowItem(ivLabel, El.None, LabelW(ivLabel), 4),
-                             new RowItem(null, El.Interval, 52, 0)),
-                new RowGroup(new RowItem("Input", El.None, LabelW("Input"), 4),
-                             new RowItem(null, El.Input, inW, 0)),
-            }, c);
+            // Macro cards trade the interval for what a macro actually tunes:
+            // whether it repeats, and how fast it replays. The loop gap moved
+            // to the advanced dialog with the other between-repeats settings.
+            if (s.IsMacro)
+                SpreadRow(lineA, L, R, hit, new RowGroup[]
+                {
+                    new RowGroup(new RowItem("Hotkey", El.None, LabelW("Hotkey"), 4),
+                                 new RowItem(null, El.Hotkey, hkW, 0)),
+                    new RowGroup(new RowItem("Loop", El.None, LabelW("Loop"), 4),
+                                 new RowItem(null, El.Loop, 44, 0)),
+                    new RowGroup(new RowItem("Speed (%)", El.None, LabelW("Speed (%)"), 4),
+                                 new RowItem(null, El.Speed, 52, 0)),
+                    new RowGroup(new RowItem("Input", El.None, LabelW("Input"), 4),
+                                 new RowItem(null, El.Input, inW, 0)),
+                }, c);
+            else
+                SpreadRow(lineA, L, R, hit, new RowGroup[]
+                {
+                    new RowGroup(new RowItem("Hotkey", El.None, LabelW("Hotkey"), 4),
+                                 new RowItem(null, El.Hotkey, hkW, 0)),
+                    new RowGroup(new RowItem("Interval (ms)", El.None, LabelW("Interval (ms)"), 4),
+                                 new RowItem(null, El.Interval, 52, 0)),
+                    new RowGroup(new RowItem("Input", El.None, LabelW("Input"), 4),
+                                 new RowItem(null, El.Input, inW, 0)),
+                }, c);
 
             if (s.IsMacro)
             {
@@ -956,6 +985,13 @@ namespace Polyclicker
                         DrawField(g, er, s.Interval.ToString(CultureInfo.InvariantCulture),
                                   valueCol, s.Color, s.HotkeyOff);
                         break;
+                    case El.Loop:
+                        DrawIcon(g, er, s.MacroLoop ? "loop" : "once", hot, cardChip);
+                        break;
+                    case El.Speed:
+                        DrawField(g, er, s.MacroSpeed.ToString(CultureInfo.InvariantCulture),
+                                  valueCol, s.Color, s.HotkeyOff);
+                        break;
                     case El.Input: DrawCombo(g, er, s.Input, hot, s.Color, valueCol, s.HotkeyOff); break;
                     case El.XBox:
                         DrawField(g, er, s.X.ToString(CultureInfo.InvariantCulture), valueCol, s.Color, s.HotkeyOff);
@@ -1106,7 +1142,8 @@ namespace Polyclicker
         {
             return el == El.Gear || el == El.Rec || el == El.Lock || el == El.Remove
                 || el == El.Dup || el == El.Pick || el == El.Rename || el == El.DelMacro
-                || el == El.Color || el == El.Pos || el == El.Min || el == El.Preview;
+                || el == El.Color || el == El.Pos || el == El.Min || el == El.Preview
+                || el == El.Loop;
         }
 
         string TipFor(El el, int index)
@@ -1132,6 +1169,11 @@ namespace Polyclicker
                     return cards[index].Cfg.IsFixed
                         ? "Clicks a fixed spot - click to follow the mouse instead"
                         : "Clicks wherever the mouse is - click to use a fixed spot";
+                case El.Loop:
+                    if (index < 0 || index >= cards.Count) return null;
+                    return cards[index].Cfg.MacroLoop
+                        ? "Repeats until stopped - click to play once per press"
+                        : "Plays once per press - click to repeat until stopped";
                 default: return null;
             }
         }
@@ -1268,7 +1310,7 @@ namespace Polyclicker
         {
             return el == El.Name || el == El.Hotkey || el == El.Interval
                 || el == El.Input || el == El.XBox || el == El.YBox
-                || el == El.MacroSel || el == El.Key;
+                || el == El.MacroSel || el == El.Key || el == El.Speed;
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -1335,6 +1377,13 @@ namespace Polyclicker
                         Reflow();               // the X/Y row appears or goes
                         Fire(Changed, i);
                         break;
+                    case El.Loop:
+                        // Repeat <-> play once; a running card picks it up on
+                        // its next start, like every other snapshotted setting
+                        cards[i].Cfg.MacroLoop = !cards[i].Cfg.MacroLoop;
+                        InvalidateCard(i);
+                        Fire(Changed, i);
+                        break;
                     case El.Lock:
                         cards[i].Cfg.HotkeyOff = !cards[i].Cfg.HotkeyOff;
                         RefreshStatus(i, false, 0);
@@ -1362,7 +1411,7 @@ namespace Polyclicker
 
             if (!commit && i >= 0 && i < cards.Count
                 && (el == El.Name || el == El.Interval || el == El.XBox
-                 || el == El.YBox || el == El.Key))
+                 || el == El.YBox || el == El.Key || el == El.Speed))
                 CommitText(i, el, editorOriginal);       // put the old value back
 
             Controls.Remove(ed);
@@ -1421,6 +1470,10 @@ namespace Polyclicker
                     DropList.Open(this, RectangleToScreen(r), list, cur, delegate(string v)
                     {
                         if (isInput) s.Input = v; else s.Macro = v;
+                        // A macro's loop gap may be 0; a clicker's interval
+                        // must not be - switching the input type would
+                        // otherwise carry the 0 over as a 10k cps request
+                        if (isInput && v != "Macro" && s.Interval < 1) s.Interval = 50;
                         int idx = cards.IndexOf(card);
                         if (idx >= 0) Fire(Changed, idx);
                         Reflow();
@@ -1463,8 +1516,9 @@ namespace Polyclicker
 
                 default:
                 {
-                    TextBox box = (el == El.Interval || el == El.XBox || el == El.YBox)
-                                ? new NumberBox { AllowNegative = el != El.Interval }
+                    TextBox box = (el == El.Interval || el == El.XBox || el == El.YBox
+                                   || el == El.Speed)
+                                ? new NumberBox { AllowNegative = el == El.XBox || el == El.YBox }
                                 : new Field();
                     ((Field)box).Backdrop = behind;
                     box.BackColor = editorBack;
@@ -1472,6 +1526,7 @@ namespace Polyclicker
                     string cur =
                         el == El.Name ? s.Name :
                         el == El.Interval ? s.Interval.ToString(CultureInfo.InvariantCulture) :
+                        el == El.Speed ? s.MacroSpeed.ToString(CultureInfo.InvariantCulture) :
                         el == El.XBox ? s.X.ToString(CultureInfo.InvariantCulture) :
                         s.Y.ToString(CultureInfo.InvariantCulture);
                     editorOriginal = cur;
@@ -1509,6 +1564,12 @@ namespace Polyclicker
                 // 50, not 1: an unparseable box is someone mid-edit, and a 1 ms
                 // fallback is a thousand clicks a second
                 case El.Interval: s.Interval = int.TryParse(text, out v) && v > 0 ? v : 50; break;
+                // 100 fallback for the same mid-edit reason as the interval's
+                case El.Speed:
+                    s.MacroSpeed = int.TryParse(text, out v) && v > 0
+                        ? Math.Max(SlotConfig.MacroSpeedMin, Math.Min(SlotConfig.MacroSpeedMax, v))
+                        : 100;
+                    break;
                 case El.XBox: s.X = int.TryParse(text, out v) ? v : 0; break;
                 case El.YBox: s.Y = int.TryParse(text, out v) ? v : 0; break;
             }

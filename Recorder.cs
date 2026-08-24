@@ -71,8 +71,8 @@ namespace Polyclicker
         static long _lastMoveTick;
         static int _lastX = int.MinValue, _lastY = int.MinValue;
 
-        // Two tiers of hotkey filtering. The main key (F9) and Escape only ever
-        // mean start/stop, so they are dropped at the source. The chord's
+        // Two tiers of hotkey filtering. The record key itself only ever
+        // means start/stop, so it is dropped at the source. The chord's
         // MODIFIERS are different: dropping every Ctrl and Alt for the whole
         // take silently rewrites any recorded Ctrl+click or Alt+combo into
         // its bare key. They are recorded normally, and only the presses
@@ -205,7 +205,7 @@ namespace Polyclicker
             lock (_events)
             {
                 if (!Recording) return;
-                // The record key and Escape only ever mean start/stop
+                // The record key only ever means start/stop
                 if (type >= 3 && _ignoreAlways.Contains(a)) return;
                 // Autorepeat: a held key streams downs; one is enough
                 if (type == 3) { if (!_kbDown.Add(a)) return; }
