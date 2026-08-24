@@ -63,7 +63,7 @@ Requires .NET Framework 4.x (included in Windows 8 and later).
 ## Disclosure
 
 A large share of this code was written by an AI assistant, with a human
-directing, reviewing, and testing it. Sorry. Review the source before
+directing, reviewing, and testing it. I'm Sorry. Review the source before
 trusting the binary. This program installs system-wide keyboard and mouse
 hooks and synthesizes input; a bug could swallow keystrokes or leave a mouse
 button logically held down. Avoid running it in situations where unintended
