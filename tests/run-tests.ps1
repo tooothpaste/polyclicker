@@ -17,7 +17,7 @@ $data  = Join-Path $bin "data"
 $csc   = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 $refs  = "/r:System.dll", "/r:System.Drawing.dll", "/r:System.Windows.Forms.dll",
          "/r:System.IO.Compression.dll", "/r:System.IO.Compression.FileSystem.dll"
-$src   = Get-ChildItem -Path $root -Filter *.cs | ForEach-Object { $_.FullName }
+$src   = Get-ChildItem -Path $root -Filter *.cs | Where-Object { $_.Name -ne "BuildInfo.cs" } | ForEach-Object { $_.FullName }
 New-Item -ItemType Directory -Force $data | Out-Null
 Get-Process Polyclicker -ErrorAction SilentlyContinue | Stop-Process -Force
 

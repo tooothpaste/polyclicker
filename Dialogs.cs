@@ -344,8 +344,7 @@ namespace Polyclicker
             gHot.Location = new Point(Mx, y);
             Controls.Add(gHot);
             cy = y + CapH;
-            cy = Muted("Active whatever window has focus. Press Backspace in a box to unassign.",
-                       Ix, cy, Iw).Bottom + 4;
+            cy = Muted("Work in any window. Backspace clears a box.", Ix, cy, Iw).Bottom + 4;
 
             string[] labels = { "Emergency stop", "Toggle all hotkeys", "Start / stop recording" };
             HotkeyBox[] boxes = { stopBox, killBox, recBox };
@@ -368,8 +367,7 @@ namespace Polyclicker
             Controls.Add(gMac);
             cy = y + CapH;
             cy = Muted("Ready a clicker with its ⏺ button, then press " + recordKeyShown
-                + " to start and stop recording. The take is saved under that card's name,"
-                + " in the Macros folder.", Ix, cy, Iw).Bottom + 6;
+                + " to start and stop recording.", Ix, cy, Iw).Bottom + 6;
             ChipButton openBtn = IconBtn("folder", "Open Macros folder", Ix, cy, 180, 28);
             openBtn.Click += delegate
             {
@@ -446,11 +444,7 @@ namespace Polyclicker
             updLbl = Plain("", Ix + 158, cy + 5, Iw - 158);
             updLbl.ForeColor = Color.Gray;
             updLbl.BringToFront();
-            cy += 30;
-            cy = Muted("One request to github.com, made when this window opens and on"
-                + " the button. Nothing is sent and nothing is downloaded; a newer"
-                + " release is a link to its page.",
-                Ix, cy, Iw).Bottom;
+            cy += 28;
             gUpd.Size = new Size(Gw, cy + Pad - y);
             y = gUpd.Bottom + Gap + 4;
 
@@ -585,18 +579,15 @@ namespace Polyclicker
             Controls.Add(atEdit); atEdit.BringToFront();
             Plain("(HH:MM)", xL + 320, cy + 4, 62);
             cy += 25 + 6;
-            cy = Muted("Pressing the hotkey arms the card; it starts after the delay,"
-                + " or at the next HH:MM (24-hour), or both - the delay counts from"
-                + " the scheduled time. Press the hotkey again to cancel the wait.",
-                ixL, cy, Iw).Bottom + 4;
+            cy = Muted("Starts after the delay, at the next HH:MM, or both."
+                + " The hotkey again cancels the wait.", ixL, cy, Iw).Bottom + 4;
             lockChk.Text = "Keep running while locked";
             lockChk.SetBounds(ixL, cy, Iw, 22);
             lockChk.Checked = cfg.KeepWhileLocked;
             Controls.Add(lockChk);
             lockChk.BringToFront();
             cy += 26;
-            cy = Muted("Locking a running card normally stops it. With this on, the lock"
-                + " only blocks the hotkey and the card keeps going.",
+            cy = Muted("The lock only blocks the hotkey; the card keeps running.",
                 ixL, cy, Iw).Bottom;
             gTrig.Size = new Size(Gw, cy + Pad - yL);
             yL = gTrig.Bottom + Gap;
@@ -670,11 +661,9 @@ namespace Polyclicker
                 cy += 26;
             }
             cy = Muted(isMouse
-                ? "Anywhere runs it everywhere. With a window set, starting needs it"
-                + " in front, and it pauses when you switch away - unless you keep it"
-                + " running, which clicks it in the background."
-                : "Anywhere runs it everywhere. With a window set, starting needs it"
-                + " in front, and it pauses when you switch away.",
+                ? "With a window set, it starts in front and pauses when you switch"
+                + " away, unless kept running in the background."
+                : "With a window set, it starts in front and pauses when you switch away.",
                 ixL, cy, Iw).Bottom;
             gWin.Size = new Size(Gw, cy + Pad - yL);
             yL = gWin.Bottom + Gap;
@@ -696,8 +685,7 @@ namespace Polyclicker
             Controls.Add(secsEdit); secsEdit.BringToFront();
             Plain("seconds", xR + 314, cy + 4, 64);
             cy += 25 + 6;
-            cy = Muted("0 means no limit. With both set, whichever hits first.",
-                       xR + 88, cy, 292).Bottom + 4;
+            cy = Muted("0 = no limit. Whichever hits first.", xR + 88, cy, 292).Bottom + 4;
             stopMouseChk.Text = "Stop when I use the mouse";
             stopMouseChk.SetBounds(ixR, cy, Iw, 22);
             stopMouseChk.Checked = cfg.StopOnMouse;
@@ -711,10 +699,9 @@ namespace Polyclicker
             stopKeysChk.BringToFront();
             cy += 26;
             cy = Muted(isMacro
-                ? "A real click, scroll, or key stops it at once. Pointer movement"
-                + " doesn't count while the take is driving the pointer."
-                : "Nudging the pointer a few pixels is ignored; real movement,"
-                + " a click, a scroll, or a key stops it at once.", ixR, cy, Iw).Bottom;
+                ? "A click, scroll, or key stops it. Pointer moves don't count while"
+                + " the take drives the pointer."
+                : "A click, scroll, key, or real movement stops it.", ixR, cy, Iw).Bottom;
             gStop.Size = new Size(Gw, cy + Pad - yR);
             yR = gStop.Bottom + Gap;
 
@@ -735,8 +722,7 @@ namespace Polyclicker
                 Controls.Add(gapEdit); gapEdit.BringToFront();
                 Plain("ms", xR + 144, cy + 4, 26);
                 cy += 25 + 6;
-                cy = Muted("The pause between repeats when the card loops."
-                    + " 0 replays back-to-back.", ixR, cy, Iw).Bottom;
+                cy = Muted("Pause between loops. 0 replays back-to-back.", ixR, cy, Iw).Bottom;
             }
             else
             {
@@ -766,9 +752,8 @@ namespace Polyclicker
                 holdEdit.TextChanged += refreshHint;
                 refreshHint(null, EventArgs.Empty);
                 cy += 25 + 6;
-                cy = Muted("How long the button stays down. As a share of the interval it"
-                    + " keeps its feel when you change the click rate. To hold it down"
-                    + " permanently, use the toggle by the card's interval.", ixR, cy, Iw).Bottom;
+                cy = Muted("Share of the interval the button stays down. To hold it"
+                    + " permanently, use the toggle by the interval.", ixR, cy, Iw).Bottom;
             }
             gClick.Size = new Size(Gw, cy + Pad - yR);
             yR = gClick.Bottom + Gap;
@@ -802,11 +787,9 @@ namespace Polyclicker
             }
             cy += 25 + 6;
             cy = Muted(isMouse
-                ? "0 = exact timing and position. Position needs Fixed Position; it is"
-                + " ignored when following the mouse."
+                ? "0 = exact. Position needs Fixed Position."
                 : isMacro
-                ? "0 = exact timing. Steps nudges every press and release in the take"
-                + " by up to that much, so no two passes land identically."
+                ? "0 = exact. Steps nudges every press and release by up to that much."
                 : "0 = exact timing.", ixR, cy, Iw).Bottom;
             gRand.Size = new Size(Gw, cy + Pad - yR);
             yR = gRand.Bottom + Gap;

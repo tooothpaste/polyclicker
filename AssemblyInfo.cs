@@ -15,4 +15,3 @@ using System.Reflection;
 [assembly: AssemblyCompany("tooothpaste")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 tooothpaste")]
 [assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]

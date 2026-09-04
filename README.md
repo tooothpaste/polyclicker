@@ -60,6 +60,11 @@ No SDK or NuGet needed; the compiler ships with the .NET Framework:
 .\build.ps1
 ```
 
+That is a dev build: titled "Polyclicker dev", a muted icon with a terminal
+badge, and a file version ending in the number of commits since the last
+tag. `.\build.ps1 -Release` builds the release, which is what the installer
+script uses. `tools\make-icon.ps1` renders `polyclicker.svg` to the icons.
+
 or directly:
 
 ```

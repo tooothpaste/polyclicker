@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Build
+
+- Dev builds are told apart from the release: `build.ps1` titles them
+  "Polyclicker dev", gives them a muted icon with a terminal badge, and a
+  file version ending in the commit count since the last tag. `-Release`
+  builds the release; the installer uses it.
+
+### Dialogs
+
+- Shorter hints in Settings and Advanced; the Updates group is just the
+  button and its result.
+
 ## 1.2 — 2026-09-03
 
 ### Performance

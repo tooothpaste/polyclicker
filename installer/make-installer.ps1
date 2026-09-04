@@ -23,7 +23,7 @@ if (-not $iscc) {
     exit 1
 }
 
-& (Join-Path $root "build.ps1")
+& (Join-Path $root "build.ps1") -Release
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & $iscc /Q (Join-Path $here "Polyclicker.iss")

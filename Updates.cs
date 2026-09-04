@@ -77,6 +77,19 @@ namespace Polyclicker
 
         // The running build's version, trimmed the way release tags are
         // written: "1.1", or "1.1.1" when a build number is in use.
+        // build.ps1 stamps every build "dev" or "release"; a dev build says so
+        // in its title and wears the muted icon, so the installed release and
+        // a build from the tree are never mistaken for each other
+        public static readonly bool IsDev = Stamp() == "dev";
+        public static readonly string AppName = IsDev ? "Polyclicker dev" : "Polyclicker";
+
+        static string Stamp()
+        {
+            object[] a = Assembly.GetExecutingAssembly()
+                .GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
+            return a.Length > 0 ? ((AssemblyInformationalVersionAttribute)a[0]).InformationalVersion : "";
+        }
+
         public static string Current()
         {
             Version v = Assembly.GetExecutingAssembly().GetName().Version;

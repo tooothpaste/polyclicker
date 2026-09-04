@@ -5,7 +5,7 @@ $tests = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root  = Split-Path -Parent $tests
 $bin   = Join-Path $tests "bin"
 $csc   = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-$src   = Get-ChildItem -Path $root -Filter *.cs | ForEach-Object { $_.FullName }
+$src   = Get-ChildItem -Path $root -Filter *.cs | Where-Object { $_.Name -ne "BuildInfo.cs" } | ForEach-Object { $_.FullName }
 & $csc /nologo /optimize+ /target:exe "/out:$bin\PolyPerf.exe" /main:Polyclicker.PerfMain `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll `
     /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll $src (Join-Path $tests "PerfMain.cs")

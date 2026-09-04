@@ -65,7 +65,7 @@ namespace Polyclicker
                             ? envPct / 100f : cfg.UiScale / 100f;
             Theme.Zoom = ZoomStep;
 
-            Text = "Polyclicker";
+            Text = Updates.AppName;
             // Not double-buffered: the client area is covered by children
             // that buffer themselves, and a form-sized buffer cost a fixed
             // ~0.6 ms on every size tick for the sliver of title band it
@@ -157,7 +157,7 @@ namespace Polyclicker
             titleIcon.SizeMode = PictureBoxSizeMode.Zoom;
 
             titleLabel = new Label();
-            titleLabel.Text = "Polyclicker";
+            titleLabel.Text = Updates.AppName;
             titleLabel.Font = Theme.TitleFont;
             titleLabel.AutoSize = true;
             titleLabel.Location = new Point(Theme.S(46), Theme.S(9));
@@ -271,7 +271,7 @@ namespace Polyclicker
 
             tray = new NotifyIcon();
             tray.Icon = trayIconOn;
-            tray.Text = "Polyclicker";
+            tray.Text = Updates.AppName;
             tray.Visible = true;
             trayMenu = new ContextMenuStrip();
             trayMenu.Items.Add("Show Window", null, delegate { Show(); WindowState = FormWindowState.Normal; });
@@ -594,7 +594,7 @@ namespace Polyclicker
         // asterisk is the warning. Saving is the save button.
         void UpdateTitle()
         {
-            Text = "Polyclicker"
+            Text = Updates.AppName
                  + (cfg.CurrentProfile.Length > 0 ? " - " + cfg.CurrentProfile : "")
                  + (HasUnsavedChanges() ? " *" : "");
         }
@@ -996,7 +996,7 @@ namespace Polyclicker
                                     + HotkeyParser.Parse(cfg.KillSwitchKey) + ")");
             surface.AllHotkeysOff = killActive;
             tray.Icon = killActive ? trayIconOff : trayIconOn;
-            tray.Text = killActive ? "Polyclicker - hotkeys OFF" : "Polyclicker";
+            tray.Text = Updates.AppName + (killActive ? " - hotkeys OFF" : "");
             // Toggled from a game via the global hotkey: the answer has to
             // arrive where the user is looking, which is wherever the mouse is
             if (GetForegroundWindow() != Handle)
