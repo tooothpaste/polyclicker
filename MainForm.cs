@@ -1648,10 +1648,21 @@ namespace Polyclicker
                     string[] files = Directory.GetFiles(AppConfig.MacroDir, "*.macro");
                     names = new string[files.Length];
                     for (int i = 0; i < files.Length; i++) names[i] = Path.GetFileName(files[i]);
+                    Array.Sort(names, NaturalOrder);
                 }
             }
             catch { names = new string[0]; }
             surface.SetMacroList(names);
+        }
+
+        // Explorer's ordering: numbers compare by value, so "take 9" comes
+        // before "take 10", rather than the byte order the file system hands back
+        [System.Runtime.InteropServices.DllImport("shlwapi.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int StrCmpLogicalW(string a, string b);
+        static int NaturalOrder(string a, string b)
+        {
+            try { return StrCmpLogicalW(a, b); }
+            catch { return string.Compare(a, b, StringComparison.OrdinalIgnoreCase); }
         }
 
         const string NewProfileItem = "(New - start fresh)";
@@ -1663,8 +1674,12 @@ namespace Polyclicker
                 profileCombo.Items.Clear();
                 profileCombo.Items.Add(NewProfileItem);
                 if (Directory.Exists(AppConfig.ProfileDir))
-                    foreach (string f in Directory.GetFiles(AppConfig.ProfileDir, "*.ini"))
+                {
+                    string[] files = Directory.GetFiles(AppConfig.ProfileDir, "*.ini");
+                    Array.Sort(files, NaturalOrder);
+                    foreach (string f in files)
                         profileCombo.Items.Add(Path.GetFileNameWithoutExtension(f));
+                }
                 profileCombo.Text = select.Length > 0 && profileCombo.Items.Contains(select)
                                   ? select : "";
                 profileCombo.Invalidate();

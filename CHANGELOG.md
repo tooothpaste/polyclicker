@@ -19,6 +19,7 @@
 - Takes are named without their extension in the app. The take list
   rescans the folder each time it opens, so a file copied in by hand is
   there at once, and shows a scrollbar when it scrolls.
+- Takes and profiles list in Explorer's order: "take 9" before "take 10".
 
 ## 1.2 — 2026-09-03
 
