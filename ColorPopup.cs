@@ -255,10 +255,24 @@ namespace Polyclicker
                                                              : Color.FromArgb(230, 230, 236)))
                         g.FillRectangle(b, r);
                 TextRenderer.DrawText(g, items[i], Font,
-                    Optical(new Rectangle(r.X + Theme.S(7), r.Y, r.Width - Theme.S(12), r.Height)),
+                    Optical(new Rectangle(r.X + Theme.S(7), r.Y, r.Width - (items.Count > visible ? Theme.S(18) : Theme.S(12)), r.Height)),
                     Theme.DropText,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter
                   | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+            // A long list scrolls (wheel, arrow keys); a slim thumb - the card
+            // list's own - says so, rather than the cut-off being the only clue
+            if (items.Count > visible)
+            {
+                int trackH = ClientSize.Height - Theme.S(6);
+                int th = Math.Max(Theme.S(20), trackH * visible / items.Count);
+                int ty = Theme.S(3) + (int)((long)(trackH - th) * top / Math.Max(1, items.Count - visible));
+                var tr = new Rectangle(ClientSize.Width - Theme.S(7), ty, Theme.S(4), th);
+                var prev = g.SmoothingMode;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var path = Theme.RoundPath(tr, Theme.S(2)))
+                using (var b = new SolidBrush(Theme.ScrollThumb)) g.FillPath(b, path);
+                g.SmoothingMode = prev;
             }
         }
 

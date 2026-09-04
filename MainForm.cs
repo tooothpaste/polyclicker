@@ -177,6 +177,7 @@ namespace Polyclicker
             surface = new CardSurface(tips);
             surface.Anchor = AnchorStyles.Top | AnchorStyles.Bottom
                            | AnchorStyles.Left | AnchorStyles.Right;
+            surface.MacroListOpening = RefreshMacroLists;
             surface.Changed += delegate(int i)
             {
                 // Locking a running card stops it - a lock should mean OFF,
@@ -515,7 +516,7 @@ namespace Polyclicker
                 ? "\n\nIt is used by " + users + " auto-clickers, which will have no macro to play."
                 : "";
             if (!ConfirmDialog.Ask(this, "Delete macro",
-                    "Delete '" + cur + "'?" + also + "\n\nThe file is removed from the Macros folder.", "Delete", true))
+                    "Delete '" + MacroFile.Display(cur) + "'?" + also + "\n\nThe file is removed from the Macros folder.", "Delete", true))
                 return;
 
             try { File.Delete(Path.Combine(AppConfig.MacroDir, cur)); }

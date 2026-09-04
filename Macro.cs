@@ -31,6 +31,13 @@ namespace Polyclicker
 
     static class MacroFile
     {
+        // A take as the UI names it: the file without its extension
+        public static string Display(string file)
+        {
+            return file.EndsWith(".macro", StringComparison.OrdinalIgnoreCase)
+                 ? file.Substring(0, file.Length - 6) : file;
+        }
+
         public static void Save(string path, IList<Ev> evs, long freq,
                                 bool winValid, int wx, int wy, int ww, int wh)
         {

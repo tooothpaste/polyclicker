@@ -483,6 +483,7 @@ namespace Polyclicker
         }
 
         public void SetMacroList(string[] names) { macroNames = names ?? new string[0]; }
+        public Action MacroListOpening;         // the owner rescans the folder
 
         // Anything about a card's config changed from outside (dialog, pick
         // pos, recording landed): geometry may differ, so recompute and repaint
@@ -1387,7 +1388,7 @@ namespace Polyclicker
                     case El.YBox:
                         DrawField(g, er, s.Y.ToString(CultureInfo.InvariantCulture), valueCol, s.Color, s.HotkeyOff);
                         break;
-                    case El.MacroSel: DrawCombo(g, er, s.Macro, hot, s.Color, valueCol, s.HotkeyOff); break;
+                    case El.MacroSel: DrawCombo(g, er, MacroFile.Display(s.Macro), hot, s.Color, valueCol, s.HotkeyOff); break;
                     case El.Key: DrawField(g, er, s.CustomKey, valueCol, s.Color, s.HotkeyOff); break;
                     case El.None:
                         TextNow(c.Status, c.StatusBold ? boldFont : Font,
@@ -1831,6 +1832,9 @@ namespace Polyclicker
                                                      "X1 Button", "X2 Button", "Custom Key", "Macro" });
                     else
                     {
+                        // Rescan the folder first: a take copied in by hand
+                        // is in the list the moment it's asked for
+                        if (MacroListOpening != null) MacroListOpening();
                         list.AddRange(macroNames);
                         // a selection whose file is missing stays selectable
                         if (s.Macro.Length > 0 && !list.Contains(s.Macro))
@@ -1839,8 +1843,14 @@ namespace Polyclicker
                     string cur = el == El.Input ? s.Input : s.Macro;
                     Card card = c;
                     bool isInput = el == El.Input;
-                    DropList.Open(this, RectangleToScreen(r), list, cur, delegate(string v)
+                    // Takes are listed without their extension; the pick maps back
+                    var shown = new List<string>(list.Count);
+                    foreach (string n in list) shown.Add(isInput ? n : MacroFile.Display(n));
+                    DropList.Open(this, RectangleToScreen(r), shown,
+                                  isInput ? cur : MacroFile.Display(cur), delegate(string v)
                     {
+                        int k = shown.IndexOf(v);
+                        if (k >= 0) v = list[k];
                         if (isInput) s.Input = v; else s.Macro = v;
                         // A macro's loop gap may be 0; a clicker's interval
                         // must not be - switching the input type would
