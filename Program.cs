@@ -155,6 +155,10 @@ namespace Polyclicker
                         fs.SafeFileHandle.DangerousGetHandle(), sb, 1024, 0);
                     if (n == 0 || n >= 1024) return null;
                     string p = sb.ToString();
+                    // The kernel form is \\?\C:\... or, on a share,
+                    // \\?\UNC\server\...; hand back what Path.GetFullPath
+                    // says for the same file, so the two can be compared
+                    if (p.StartsWith(@"\\?\UNC\")) return @"\\" + p.Substring(8);
                     return p.StartsWith(@"\\?\") ? p.Substring(4) : p;
                 }
             }

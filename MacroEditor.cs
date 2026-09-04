@@ -769,6 +769,14 @@ namespace Polyclicker
         // can own, so two open editors' previews cannot cross wires
         static int nextPreviewId = 1000000;
         readonly int previewId = nextPreviewId++;
+
+        // The take as it stands, written out for the engine to play; removed
+        // when the preview ends and when the editor closes
+        string PreviewFile
+        {
+            get { return Path.Combine(Path.GetTempPath(), "polyclicker-preview-" + previewId + ".macro"); }
+        }
+        void DropPreviewFile() { try { File.Delete(PreviewFile); } catch { } }
         bool previewing;
         Point homeLoc;
         Action<int> stoppedHook;
@@ -947,6 +955,7 @@ namespace Polyclicker
                 if (boldFont != null) boldFont.Dispose();
                 if (stoppedHook != null) Engine.Stopped -= stoppedHook;
                 if (previewing) Engine.Stop(previewId);
+                DropPreviewFile();
             };
             // No "save before closing?" question - same as switching away
             // from an unsaved profile. Save is explicit (the chip, Ctrl+S);
@@ -964,6 +973,7 @@ namespace Polyclicker
             stoppedHook = delegate(int id)
             {
                 if (id != previewId) return;
+                DropPreviewFile();
                 try
                 {
                     BeginInvoke((MethodInvoker)delegate
@@ -1527,8 +1537,7 @@ namespace Polyclicker
             EndCellEdit(true);
             int from = list.SelectedIndices.Count > 0
                      ? take.Rows[list.SelectedIndices[0]].From : 0;
-            string tmp = Path.Combine(Path.GetTempPath(),
-                "polyclicker-preview-" + previewId + ".macro");
+            string tmp = PreviewFile;
             try { take.WriteTo(tmp, from); }
             catch { return; }
 
@@ -1537,7 +1546,7 @@ namespace Polyclicker
             pcfg.MacroLoop = false;     // once through, exactly like the card's
             pcfg.Interval = 0;          // loop-off path with no gap
             string warn;
-            if (!Engine.StartMacro(previewId, pcfg, IntPtr.Zero, tmp, out warn)) return;
+            if (!Engine.StartMacro(previewId, pcfg, IntPtr.Zero, tmp, out warn)) { DropPreviewFile(); return; }
             previewing = true;
             playBtn.Kind = "stop";
             playBtn.Invalidate();
