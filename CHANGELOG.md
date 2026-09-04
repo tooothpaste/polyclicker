@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 — 2026-09-04
 
 ### Build
 
@@ -20,6 +20,14 @@
   rescans the folder each time it opens, so a file copied in by hand is
   there at once, and shows a scrollbar when it scrolls.
 - Takes and profiles list in Explorer's order: "take 9" before "take 10".
+
+### Fixes
+
+- A profile on a network share no longer logs a false "data folder is
+  redirected" warning at every start.
+- The macro editor removes its preview take from the temp folder when the
+  preview ends.
+- `make-installer.ps1` finds Inno Setup in its default location.
 
 ## 1.2 — 2026-09-03
 

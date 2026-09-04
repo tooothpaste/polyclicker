@@ -14,4 +14,4 @@ using System.Reflection;
 [assembly: AssemblyDescription("Multi-slot auto-clicker and macro recorder for Windows")]
 [assembly: AssemblyCompany("tooothpaste")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 tooothpaste")]
-[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
