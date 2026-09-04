@@ -68,7 +68,7 @@ namespace Polyclicker
             using (var b = new SolidBrush(Backdrop())) g.FillRectangle(b, ClientRectangle);
             var prevSm = g.SmoothingMode;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var path = Theme.RoundPath(r, 4))
+            using (var path = Theme.RoundPath(r, Theme.S(4)))
             {
                 using (var b = new SolidBrush(BackColor)) g.FillPath(b, path);
                 // The accent border says "listening"
@@ -78,7 +78,7 @@ namespace Polyclicker
             }
             g.SmoothingMode = prevSm;
             TextRenderer.DrawText(g, Text, Font,
-                Optical(new Rectangle(5, 0, Width - 10, Height)),
+                Optical(new Rectangle(Theme.S(5), 0, Width - Theme.S(10), Height)),
                 _combo.IsSet ? ForeColor : Theme.MutedText,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter
               | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);

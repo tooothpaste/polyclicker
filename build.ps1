@@ -12,6 +12,7 @@ $manifest = Join-Path $dir "app.manifest"
     /win32icon:$ico "/resource:$ico,Polyclicker.app.ico" `
     "/win32manifest:$manifest" `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll `
+    /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
     $src
 if ($LASTEXITCODE -eq 0) {
   "built: $out  ({0:N0} bytes)" -f (Get-Item $out).Length

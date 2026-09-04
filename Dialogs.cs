@@ -23,20 +23,119 @@ namespace Polyclicker
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = MinimizeBox = false;
             ShowInTaskbar = false;
+            ShowIcon = false;                   // a sizable border would show the stock one
             StartPosition = FormStartPosition.CenterParent;
             KeyPreview = true;
             KeyDown += delegate(object s, KeyEventArgs e)
             {
-                if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); }
+                if (e.KeyCode != Keys.Escape) return;
+                if (EscapeCloses()) { DialogResult = DialogResult.Cancel; Close(); }
+                e.Handled = e.SuppressKeyPress = true;   // never ding a text field
             };
+        }
+
+        // Escape closes the dialog - unless a subclass has something open
+        // that Escape should dismiss first (an in-place editor, say)
+        protected virtual bool EscapeCloses() { return true; }
+
+        // Dialogs are laid out in 100% pixels, then scaled as a whole: real
+        // controls follow their bounds, and the font they inherit is already
+        // sized to match. Once only, whoever asks first - the load, or a
+        // constructor that needs its final size before showing.
+        bool scaled;
+        protected void ApplyScale()
+        {
+            if (scaled) return;
+            scaled = true;
+            if (Math.Abs(Theme.Scale - 1f) > 0.001f)
+                Scale(new SizeF(Theme.Scale, Theme.Scale));
         }
 
         // After every control exists, and before the user sees any of them
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
+            ApplyScale();
+            // Windows centred the window on its owner when the handle was
+            // created, at the unscaled size; now that it has its real size,
+            // centre it again
+            if (StartPosition == FormStartPosition.CenterParent) CenterToParent();
             Theme.Apply(this);
             Theme.DarkTitleBar(this);
+        }
+
+        // The dialog moved to a monitor with another scale (or the scale
+        // changed under it): refont, rescale every control by the ratio, and
+        // take the size Windows suggests. Subclasses with drawn parts that
+        // cached a size override OnScaleChanged.
+        const int WM_DPICHANGED = 0x02E0;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct DpiRect { public int L, T, R, B; }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_DPICHANGED)
+            {
+                int dpi = ((int)(long)m.WParam >> 16) & 0xFFFF;
+                var r = (DpiRect)System.Runtime.InteropServices.Marshal.PtrToStructure(m.LParam, typeof(DpiRect));
+                // This window's own change. The scale the app lays out with
+                // belongs to the main window, which gets its own message when
+                // the change is system-wide; setting it from here scaled the
+                // main window's cards along with a dialog dragged elsewhere.
+                float ratio = myDpi > 0 ? dpi / (float)myDpi : 1f;
+                myDpi = dpi;
+                RescaleBy(ratio, false);
+                Bounds = new Rectangle(r.L, r.T, r.R - r.L, r.B - r.T);
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        int myDpi;                      // this window's monitor, as of the last change
+
+        // Where this window sits relative to Theme.Scale: 1 on the main
+        // window's monitor, the DPI ratio once dragged to another. Drawn
+        // parts that size themselves from Theme.S() multiply by it.
+        protected float LocalScale = 1f;
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            myDpi = Theme.WindowDpi(Handle);
+        }
+
+        // Theme.Scale already moved (zoom, or the main window's monitor):
+        // bring this window along. Also how zoom reaches an open editor.
+        public void RescaleBy(float ratio) { RescaleBy(ratio, true); }
+
+        void RescaleBy(float ratio, bool themeMoved)
+        {
+            if (Math.Abs(ratio - 1f) < 0.001f) return;
+            if (themeMoved)
+            {
+                Theme.ResetFonts();
+                Font f = Theme.UIFont;
+                Font = Math.Abs(LocalScale - 1f) < 0.001f ? f
+                     : new Font(f.FontFamily, f.Size * LocalScale, f.Style, f.Unit);
+            }
+            else
+            {
+                LocalScale *= ratio;
+                Font = new Font(Font.FontFamily, Font.Size * ratio, Font.Style, Font.Unit);
+            }
+            Scale(new SizeF(ratio, ratio));
+            OnScaleChanged();
+            Invalidate(true);
+        }
+
+        protected virtual void OnScaleChanged() { }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (Theme.ZoomKey(keyData)) return true;
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         // The theme flipped while this dialog is open (the live dark toggle):
@@ -57,9 +156,15 @@ namespace Polyclicker
             l.Size = new Size(w, 1000);
             l.AutoSize = false;
             // +6, not +4: measuring is exact to the glyph box, and a wrapped
-            // line's descenders sat right on the edge of the label
-            l.Size = new Size(w, TextRenderer.MeasureText(text, Font, new Size(w, 1000),
-                              TextFormatFlags.WordBreak).Height + 6);
+            // line's descenders sat right on the edge of the label.
+            // Measured at the width the label will HAVE once the dialog is
+            // scaled, with the (already scaled) font, then expressed back in
+            // 100% units - so the wrap count survives ApplyScale.
+            // A Label wraps a few px narrower than its width (its own padding),
+            // so measure narrower too or the last line falls off at 150%
+            int shown = TextRenderer.MeasureText(text, Font, new Size(Theme.S(w) - Theme.S(6), 1000),
+                        TextFormatFlags.WordBreak).Height + Theme.S(6);
+            l.Size = new Size(w, (int)Math.Ceiling(shown / Theme.Scale));
             Controls.Add(l);
             return l;
         }
@@ -123,20 +228,105 @@ namespace Polyclicker
         }
     }
 
+    // --- a yes/no question ---------------------------------------------------
+    // The stock MessageBox is a system dialog: unthemed in dark mode, and it
+    // positions itself. This one is a dialog like the others - centered on
+    // its owner, the verb on the button instead of Yes/No.
+    sealed class ConfirmDialog : AppDialog
+    {
+        const int W = 368, Mx = 14, TextW = W - Mx * 2;
+
+        public ConfirmDialog(string title, string message, string verb, bool destructive) : base(title)
+        {
+            var l = new Label();
+            l.Text = message;
+            l.Location = new Point(Mx, 12);
+            l.AutoSize = false;
+            // Measured the way Muted measures: at the scaled width, in the
+            // scaled font, expressed back in 100% units for ApplyScale
+            int shown = TextRenderer.MeasureText(message, Font, new Size(Theme.S(TextW) - Theme.S(6), 1000),
+                        TextFormatFlags.WordBreak).Height + Theme.S(6);
+            int h = (int)Math.Ceiling(shown / Theme.Scale);
+            l.Size = new Size(TextW, h);
+            Controls.Add(l);
+
+            int by = 12 + h + 14;
+            ClientSize = new Size(W, by + 28 + 12);
+            ChipButton ok = Btn(verb, W - Mx - 82 - 8 - 82, by, 82, 28);
+            ChipButton cancel = Btn("Cancel", W - Mx - 82, by, 82, 28);
+            ok.Style = delegate { return destructive ? Theme.RemoveChip : Theme.GoChip; };
+            ok.DialogResult = DialogResult.OK;
+            cancel.DialogResult = DialogResult.Cancel;
+            AcceptButton = ok;
+            CancelButton = cancel;
+        }
+
+        public static bool Ask(IWin32Window owner, string title, string message, string verb, bool destructive)
+        {
+            using (var d = new ConfirmDialog(title, message, verb, destructive))
+                return d.ShowDialog(owner) == DialogResult.OK;
+        }
+    }
+
     // --- Settings ----------------------------------------------------------
     sealed class SettingsDialog : AppDialog
     {
         readonly HotkeyBox stopBox = new HotkeyBox();
         readonly HotkeyBox killBox = new HotkeyBox();
         readonly HotkeyBox recBox = new HotkeyBox();
+        ChipButton updBtn;
+        Label updLbl;
+        string newerTag;                // known newer release; the button opens its page
+        readonly DropButton scaleDDL = new DropButton();
 
         public string StopAllKey  { get { return stopBox.Spec; } }
         public string KillKey     { get { return killBox.Spec; } }
         public string RecordKey   { get { return recBox.Spec; } }
+        public int UiScale
+        {
+            get
+            {
+                int v;
+                return int.TryParse(scaleDDL.Text.TrimEnd('%'), out v) ? v : 100;
+            }
+        }
+
+        readonly ToolTip tips = new ToolTip();
+
+        // The check runs when the window opens - after the handle exists, so
+        // the reply can be marshalled back - and again on the button
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            StartUpdateCheck();
+        }
+
+        void StartUpdateCheck()
+        {
+            newerTag = null;
+            updBtn.Enabled = false;
+            updLbl.Text = "Checking\u2026";
+            Updates.Check(this, delegate(string tag, bool newer)
+            {
+                if (IsDisposed) return;
+                updBtn.Enabled = true;
+                if (tag == null) updLbl.Text = "Couldn't reach github.com";
+                else if (!newer) updLbl.Text = "Up to date (" + Updates.Current() + ")";
+                else
+                {
+                    newerTag = tag;
+                    updLbl.Text = tag + " is available";
+                    updBtn.Text = "Get " + tag;
+                    updBtn.Style = delegate { return Theme.GoChip; };
+                    updBtn.Invalidate();
+                }
+            });
+        }
 
         public SettingsDialog(AppConfig cfg, string recordKeyShown, Action<string> onThemeChange)
             : base("Settings")
         {
+            Disposed += delegate { tips.Dispose(); };
             // The same computed flow as the Advanced dialog: a running cursor
             // positions each group, and each group is sized to what it holds -
             // equal margins by construction, nothing to clip.
@@ -195,7 +385,7 @@ namespace Polyclicker
             y = gMac.Bottom + Gap;
 
             var gTheme = new GroupBox();
-            gTheme.Text = " Theme ";
+            gTheme.Text = " Appearance ";
             gTheme.Location = new Point(Mx, y);
             Controls.Add(gTheme);
             cy = y + CapH;
@@ -208,7 +398,8 @@ namespace Polyclicker
             {
                 var rb = new RadioDot();
                 rb.Text = modeLabels[i];
-                int tw = TextRenderer.MeasureText(modeLabels[i], Font).Width;
+                // measured with the scaled font, laid out in 100% units
+                int tw = (int)Math.Ceiling(TextRenderer.MeasureText(modeLabels[i], Font).Width / Theme.Scale);
                 rb.SetBounds(rx, cy, tw + 26, 20);
                 rb.Checked = cfg.ThemeMode == modes[i];
                 string mode = modes[i];
@@ -222,17 +413,80 @@ namespace Polyclicker
                 rb.BringToFront();
                 rx += tw + 46;
             }
-            cy += 20;
-            gTheme.Size = new Size(Gw, cy + Pad - y);
-            y = gTheme.Bottom + Gap + 4;
+            cy += 20 + 8;
 
-            ChipButton resetBtn = IconBtn("undo", "Restore defaults", Mx, y, 150, 28);
+            // On top of the display's DPI: a 125% laptop screen at 80% draws
+            // the layout the size it has at 100%
+            Plain("UI size", Ix, cy + 4, 60);
+            foreach (int pct in new[] { 75, 90, 100, 110, 125, 150, 175, 200 })
+                scaleDDL.Items.Add(pct + "%");
+            scaleDDL.Text = cfg.UiScale + "%";
+            scaleDDL.SetBounds(Ix + 64, cy, 80, 25);
+            Controls.Add(scaleDDL);
+            scaleDDL.BringToFront();
+            Label hint = Plain("Ctrl+=  Ctrl+-  Ctrl+0 anywhere", Ix + 154, cy + 4, 220);
+            hint.ForeColor = Color.Gray;
+            cy += 25;
+            gTheme.Size = new Size(Gw, cy + Pad - y);
+            y = gTheme.Bottom + Gap;
+
+            var gUpd = new GroupBox();
+            gUpd.Text = " Updates ";
+            gUpd.Location = new Point(Mx, y);
+            Controls.Add(gUpd);
+            cy = y + CapH;
+            updBtn = Btn("Check for updates", Ix, cy, 150, 28);
+            updBtn.BringToFront();
+            updBtn.Click += delegate
+            {
+                if (newerTag == null) { StartUpdateCheck(); return; }
+                try { System.Diagnostics.Process.Start(Updates.ReleasesUrl); } catch { }
+            };
+            tips.SetToolTip(updBtn, "Ask github.com for the latest release");
+            updLbl = Plain("", Ix + 158, cy + 5, Iw - 158);
+            updLbl.ForeColor = Color.Gray;
+            updLbl.BringToFront();
+            cy += 30;
+            cy = Muted("One request to github.com, made when this window opens and on"
+                + " the button. Nothing is sent and nothing is downloaded; a newer"
+                + " release is a link to its page.",
+                Ix, cy, Iw).Bottom;
+            gUpd.Size = new Size(Gw, cy + Pad - y);
+            y = gUpd.Bottom + Gap + 4;
+
+            ChipButton resetBtn = IconBtn("undo", "Defaults", Mx, y, 100, 28);
             resetBtn.Click += delegate
             {
-                stopBox.Spec = "^!Escape";
-                killBox.Spec = "^!F10";
-                recBox.Spec = "^!F9";
+                // The defaults live in one place - a fresh config's field
+                // initialisers - so this can't drift from what a new install gets
+                var fresh = new AppConfig();
+                stopBox.Spec = fresh.StopAllKey;
+                killBox.Spec = fresh.KillSwitchKey;
+                recBox.Spec = fresh.RecordKey;
             };
+            tips.SetToolTip(resetBtn, "Restore the default hotkeys");
+
+            // The current cards and their takes as one zip, for another machine
+            ChipButton exportBtn = IconBtn("save", "Export profile…", Mx + 106, y, 148, 28);
+            exportBtn.Click += delegate
+            {
+                using (var sfd = new SaveFileDialog())
+                {
+                    sfd.Title = "Export profile";
+                    sfd.Filter = "Polyclicker profile bundle (*.zip)|*.zip";
+                    sfd.FileName = (cfg.CurrentProfile.Length > 0
+                        ? cfg.CurrentProfile : "Polyclicker profile") + ".zip";
+                    if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                    try { cfg.ExportBundle(sfd.FileName); }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "Couldn't export it:\n\n" + ex.Message,
+                            "Export profile", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            };
+            tips.SetToolTip(exportBtn, "Save the current cards and the takes they use"
+                + " as a zip; unpack it into %APPDATA%\\Polyclicker elsewhere");
 
             // right edge aligned with the group boxes above
             ChipButton ok = Btn("OK", Mx + Gw - 174, y, 82, 28);
@@ -244,7 +498,7 @@ namespace Polyclicker
             CancelButton = cancel;
             ClientSize = new Size(Gw + Mx * 2, y + 28 + Mx);
 
-            foreach (var g in new[] { gHot, gMac, gTheme }) g.SendToBack();
+            foreach (var g in new[] { gHot, gMac, gTheme, gUpd }) g.SendToBack();
         }
     }
 
@@ -261,6 +515,7 @@ namespace Polyclicker
         readonly NumberBox clicksEdit = new NumberBox();
         readonly NumberBox secsEdit = new NumberBox();
         readonly NumberBox jitterEdit = new NumberBox();
+        readonly NumberBox stepJitEdit = new NumberBox();
         readonly NumberBox posJitEdit = new NumberBox();
         readonly CheckBox restoreChk = new CheckBox();
         readonly CheckBox relChk = new CheckBox();
@@ -270,6 +525,8 @@ namespace Polyclicker
         readonly CheckBox stopMouseChk = new CheckBox();
         readonly CheckBox stopKeysChk = new CheckBox();
         readonly NumberBox gapEdit = new NumberBox();
+        readonly NumberBox delayEdit = new NumberBox();
+        readonly Field atEdit = new Field();
         Label holdHint;
 
         public bool ModeChanged;
@@ -316,6 +573,22 @@ namespace Polyclicker
             Controls.Add(modeDDL);
             modeDDL.BringToFront();
             cy += 26 + 6;
+            // Later starts: a countdown, a wall-clock time, or both
+            Plain("Start delay", ixL, cy + 4, 80);
+            delayEdit.SetBounds(xL + 98, cy, 50, 25);
+            delayEdit.Text = cfg.StartDelaySec.ToString();
+            Controls.Add(delayEdit); delayEdit.BringToFront();
+            Plain("s", xL + 154, cy + 4, 18);
+            Plain("Start at", xL + 198, cy + 4, 56);
+            atEdit.SetBounds(xL + 258, cy, 56, 25);
+            atEdit.Text = cfg.StartAt;
+            Controls.Add(atEdit); atEdit.BringToFront();
+            Plain("(HH:MM)", xL + 320, cy + 4, 62);
+            cy += 25 + 6;
+            cy = Muted("Pressing the hotkey arms the card; it starts after the delay,"
+                + " or at the next HH:MM (24-hour), or both - the delay counts from"
+                + " the scheduled time. Press the hotkey again to cancel the wait.",
+                ixL, cy, Iw).Bottom + 4;
             lockChk.Text = "Keep running while locked";
             lockChk.SetBounds(ixL, cy, Iw, 22);
             lockChk.Checked = cfg.KeepWhileLocked;
@@ -485,7 +758,7 @@ namespace Polyclicker
                 {
                     int pct;
                     if (!int.TryParse(holdEdit.Text, out pct)) pct = 0;
-                    pct = Math.Max(0, Math.Min(90, pct));
+                    pct = Math.Max(0, Math.Min(99, pct));
                     holdHint.Text = pct == 0
                         ? "instant (default)"
                         : "= " + (Math.Max(1, cfg.Interval) * pct / 100) + " ms per click";
@@ -494,7 +767,8 @@ namespace Polyclicker
                 refreshHint(null, EventArgs.Empty);
                 cy += 25 + 6;
                 cy = Muted("How long the button stays down. As a share of the interval it"
-                    + " keeps its feel when you change the click rate.", ixR, cy, Iw).Bottom;
+                    + " keeps its feel when you change the click rate. To hold it down"
+                    + " permanently, use the toggle by the card's interval.", ixR, cy, Iw).Bottom;
             }
             gClick.Size = new Size(Gw, cy + Pad - yR);
             yR = gClick.Bottom + Gap;
@@ -518,10 +792,21 @@ namespace Polyclicker
                 Controls.Add(posJitEdit); posJitEdit.BringToFront();
                 Plain("px", xR + 340, cy + 4, 26);
             }
+            else if (isMacro)
+            {
+                Plain("Steps ±", xR + 206, cy + 4, 60);
+                stepJitEdit.SetBounds(xR + 268, cy, 50, 25);
+                stepJitEdit.Text = cfg.MacroJitterMs.ToString();
+                Controls.Add(stepJitEdit); stepJitEdit.BringToFront();
+                Plain("ms", xR + 324, cy + 4, 26);
+            }
             cy += 25 + 6;
             cy = Muted(isMouse
                 ? "0 = exact timing and position. Position needs Fixed Position; it is"
                 + " ignored when following the mouse."
+                : isMacro
+                ? "0 = exact timing. Steps nudges every press and release in the take"
+                + " by up to that much, so no two passes land identically."
                 : "0 = exact timing.", ixR, cy, Iw).Bottom;
             gRand.Size = new Size(Gw, cy + Pad - yR);
             yR = gRand.Bottom + Gap;
@@ -602,16 +887,19 @@ namespace Polyclicker
             o.WinTitle = winValue;
             // Only controls the dialog actually showed write back - a hidden
             // setting keeps whatever the card had stored
-            int v;
-            o.StopClicks  = int.TryParse(clicksEdit.Text, out v) ? Math.Max(0, v) : 0;
-            o.StopSeconds = int.TryParse(secsEdit.Text, out v) ? Math.Max(0, v) : 0;
-            o.JitterMs    = int.TryParse(jitterEdit.Text, out v) ? Math.Max(0, v) : 0;
-            if (posJitEdit.Parent != null)
-                o.PosJitter = int.TryParse(posJitEdit.Text, out v) ? Math.Max(0, v) : 0;
-            if (holdEdit.Parent != null)
-                o.HoldPercent = int.TryParse(holdEdit.Text, out v) ? Math.Max(0, Math.Min(90, v)) : 0;
-            if (gapEdit.Parent != null)
-                o.Interval = int.TryParse(gapEdit.Text, out v) ? Math.Max(0, v) : 0;
+            o.StopClicks  = Num(clicksEdit, int.MaxValue);
+            o.StopSeconds = Num(secsEdit, int.MaxValue);
+            o.JitterMs    = Num(jitterEdit, int.MaxValue);
+            if (posJitEdit.Parent != null) o.PosJitter = Num(posJitEdit, int.MaxValue);
+            if (stepJitEdit.Parent != null) o.MacroJitterMs = Num(stepJitEdit, 5000);
+            if (holdEdit.Parent != null) o.HoldPercent = Num(holdEdit, 99);
+            if (gapEdit.Parent != null) o.Interval = Num(gapEdit, int.MaxValue);
+            o.StartDelaySec = Num(delayEdit, 86400);
+            // Anything that doesn't read as a time of day clears the schedule
+            // rather than silently keeping a value the box no longer shows
+            int hh, mm;
+            o.StartAt = SlotConfig.TryParseStartAt(atEdit.Text, out hh, out mm)
+                      ? hh.ToString("00") + ":" + mm.ToString("00") : "";
             o.KeepWhileLocked = lockChk.Checked;
             o.StopOnMouse = stopMouseChk.Checked;
             o.StopOnKeys = stopKeysChk.Checked;
@@ -620,65 +908,13 @@ namespace Polyclicker
             if (flickChk.Parent != null) o.FlickFocus = flickChk.Checked;
             if (relChk.Parent != null) o.MacroRelative = relChk.Checked;
         }
-    }
 
-    // --- "Pick..." : the open windows, choose one as the gate --------------
-    sealed class PickWindowDialog : AppDialog
-    {
-        readonly ListBox list = new ListBox();
-        readonly RadioButton byExe = new RadioButton();
-        readonly RadioButton byTitle = new RadioButton();
-        readonly List<KeyValuePair<string, string>> wins;
-
-        public string Chosen = "";
-
-        public PickWindowDialog() : base("Pick a window")
+        // A number box's value, clamped to 0..max; unparseable reads as 0
+        static int Num(TextBox box, int max)
         {
-            ClientSize = new Size(430, 342);
-            Plain("Currently open windows:", 14, 10, 300);
-            list.SetBounds(14, 34, 402, 220);
-            list.IntegralHeight = false;
-            Controls.Add(list);
-
-            // By program is the durable choice - titles change with the
-            // document, the exe stays put - so it is the default.
-            byExe.Text = "Match the program (any window it owns)";
-            byExe.SetBounds(14, 262, 402, 22);
-            byExe.Checked = true;
-            byTitle.Text = "Match this exact title";
-            byTitle.SetBounds(14, 284, 402, 22);
-            Controls.Add(byExe);
-            Controls.Add(byTitle);
-
-            ChipButton ok = Btn("OK", 244, 310, 82, 26);
-            ChipButton cancel = Btn("Cancel", 334, 310, 82, 26);
-            ok.Style = delegate { return Theme.GoChip; };
-            ok.DialogResult = DialogResult.OK;
-            cancel.DialogResult = DialogResult.Cancel;
-            AcceptButton = ok;
-            CancelButton = cancel;
-
-            IntPtr own = IntPtr.Zero;
-            try { own = Application.OpenForms.Count > 0 ? Application.OpenForms[0].Handle : IntPtr.Zero; }
-            catch { }
-            wins = WindowMatcher.OpenWindows(own);
-            foreach (var w in wins)
-                list.Items.Add(w.Key + "   [" + w.Value + "]");
-            if (list.Items.Count > 0) list.SelectedIndex = 0;
-
-            list.DoubleClick += delegate { DialogResult = DialogResult.OK; Close(); };
-            ok.Click += delegate { Take(); };
-            FormClosing += delegate
-            {
-                if (DialogResult == DialogResult.OK) Take();
-            };
-        }
-
-        void Take()
-        {
-            int i = list.SelectedIndex;
-            if (i < 0 || i >= wins.Count) { Chosen = ""; return; }
-            Chosen = byExe.Checked ? "ahk_exe " + wins[i].Value : wins[i].Key;
+            int v;
+            return int.TryParse(box.Text, out v) ? Math.Max(0, Math.Min(max, v)) : 0;
         }
     }
+
 }

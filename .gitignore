@@ -8,3 +8,9 @@ Macros/
 
 # Superseded code kept around locally
 retired/
+
+# Harness output: built test exes, screenshots, scratch data
+tests/bin/
+
+# Installer output
+dist/

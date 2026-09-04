@@ -68,7 +68,7 @@ namespace Polyclicker
             try
             {
                 using (Graphics g = Graphics.FromHdc(dc))
-                using (var path = Theme.RoundPath(new Rectangle(0, 0, Width - 1, Height - 1), 4))
+                using (var path = Theme.RoundPath(new Rectangle(0, 0, Width - 1, Height - 1), Theme.S(4)))
                 {
                     // Erase the classic square frame, then dress the corners
                     // as the surface behind, then the antialiased border

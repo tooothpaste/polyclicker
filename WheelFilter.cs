@@ -8,9 +8,7 @@
 //  a gesture that should only move the view.
 //
 //  An application-wide filter is the fix: any wheel over the card area is
-//  handed to the scrolling panel instead, whatever control it landed on. The
-//  one exception is a dropdown that is actually open, where scrolling the
-//  list is what the user means.
+//  handed to the scrolling panel instead, whatever control it landed on.
 // ===========================================================================
 
 using System;
@@ -45,11 +43,6 @@ namespace Polyclicker
 
             Control c = Control.FromHandle(under);
             if (c == null) return false;
-
-            // An open dropdown owns the wheel - that gesture is the user
-            // picking from the list they just opened
-            var combo = c as ComboBox;
-            if (combo != null && combo.DroppedDown) return false;
 
             // Is it ours? Walk up to see whether the card area contains it
             for (Control w = c; w != null; w = w.Parent)

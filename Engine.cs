@@ -68,7 +68,7 @@ namespace Polyclicker
             if (target == IntPtr.Zero) return false;
             // It must belong to the gate window's tree, or the point is over
             // something else entirely (another app in front of the game)
-            if (RootOf(target) != s.Gate) target = s.Gate;
+            if (WindowMatcher.RootOf(target) != s.Gate) target = s.Gate;
 
             var cp = pt;
             if (!ScreenToClient(target, ref cp)) return false;
@@ -106,14 +106,17 @@ namespace Polyclicker
                 {
                     QueryPerformanceCounter(out now);
                     if (now - start >= s.HoldTicks) break;
+                    if (s.HoldForever)
+                    {
+                        if (s.StopAtTick != 0 && now >= s.StopAtTick) break;
+                        if (!MayFire(s)) break;
+                    }
                     Thread.Sleep(1);
                 }
             }
             return PostMessageW(target, up, wUp, lp);
         }
 
-        [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
-        static IntPtr RootOf(IntPtr h) { return h == IntPtr.Zero ? h : GetAncestor(h, 2); }
 
         // --- conversion observer --------------------------------------------
         // A low-level mouse hook on its own pumping thread. Its only job is
@@ -221,6 +224,7 @@ namespace Polyclicker
             lock (Running)
                 foreach (Slot s in Running.Values)
                 {
+                    if (s.ArmedWait) continue;  // still counting down - see Slot
                     if (s.Cfg.StopOnMouse) wantMouse = true;
                     if (s.Cfg.StopOnKeys) wantKeys = true;
                     if (wantMouse && wantKeys) break;
@@ -257,7 +261,8 @@ namespace Polyclicker
                 var ids = new List<int>();
                 lock (Running)
                     foreach (KeyValuePair<int, Slot> kv in Running)
-                        if (mouse ? kv.Value.Cfg.StopOnMouse : kv.Value.Cfg.StopOnKeys)
+                        if (!kv.Value.ArmedWait
+                            && (mouse ? kv.Value.Cfg.StopOnMouse : kv.Value.Cfg.StopOnKeys))
                             ids.Add(kv.Key);
                 // Each worker's own exit raises Stopped and the UI catches up
                 foreach (int id in ids) Stop(id);
@@ -641,6 +646,15 @@ namespace Polyclicker
             // The slot's CURRENT card index. Captured ids go stale the moment
             // cards are reordered, so the worker reads this at exit instead.
             public volatile int Id;
+            // Armed but not yet clicking: a start delay or scheduled time is
+            // still counting down. BeginAtTicks is DateTime ticks, not QPC -
+            // wall clock, deliberately, so a scheduled start survives the
+            // machine sleeping through part of the wait (QPC pauses with it).
+            // While ArmedWait is set the slot's stop-on-input choices are
+            // ignored: the user keeps working during a countdown, and their
+            // typing must not cancel the start it is waiting for.
+            public volatile bool ArmedWait;
+            public long BeginAtTicks;           // 0 = start at once
             public Thread Worker;
             public volatile bool Run;
             public SlotConfig Cfg;
@@ -655,13 +669,12 @@ namespace Polyclicker
             // The same two events every time, so they are marshalled into
             // native memory once at startup instead of on every click
             public IntPtr NativeBuf;
-            // A scratch INPUT for pointer moves, so the click pair above is
-            // never overwritten by one
             public Random Rng = new Random();
             public IntPtr Gate;                 // window the slot is tied to, or zero
             // Press-and-hold: how long each press stays down (0 = instant),
             // and the release event to fire if the run stops mid-press
             public long HoldTicks;
+            public bool HoldForever;            // HoldPercent 100: never lift
             public IntPtr HeldUp;               // non-zero while a press is open
 
             // When the last few clicks actually landed, for the achieved-rate
@@ -679,6 +692,7 @@ namespace Polyclicker
             // is NOT scaled - it is the user's own pause setting, not part of
             // the recorded performance.
             public double SpeedInv = 1.0;
+            public long StepJitterTicks;        // per press/release, both ways
             // Window-relative playback: recorded positions shift by however far
             // the reference window has moved since the take. Recomputed at each
             // loop start, so dragging the window mid-run stays aligned.
@@ -814,11 +828,6 @@ namespace Polyclicker
             }
         }
 
-        public static bool AnyRunning()
-        {
-            lock (Running) return Running.Count > 0;
-        }
-
         public static int RunningCount()
         {
             lock (Running) return Running.Count;
@@ -838,6 +847,8 @@ namespace Polyclicker
             return ids;
         }
 
+        // Not read by the app itself - the regression harness counts a slot's
+        // clicks through it
         public static long ClickCount(int id)
         {
             lock (Running)
@@ -845,6 +856,65 @@ namespace Polyclicker
                 Slot s;
                 return Running.TryGetValue(id, out s) ? s.Count : 0;
             }
+        }
+
+        // Resolve the card's later-start settings into one wall-clock moment.
+        // The scheduled time means the NEXT such time - already past today
+        // rolls to tomorrow - and the delay counts from it, so both together
+        // read as "at 15:00, plus 5 seconds".
+        static void ArmBegin(Slot s, SlotConfig cfg)
+        {
+            DateTime begin = DateTime.Now;
+            bool wait = false;
+            int hh, mm;
+            if (SlotConfig.TryParseStartAt(cfg.StartAt, out hh, out mm))
+            {
+                DateTime t = DateTime.Today.AddHours(hh).AddMinutes(mm);
+                if (t <= begin) t = t.AddDays(1);
+                begin = t;
+                wait = true;
+            }
+            if (cfg.StartDelaySec > 0)
+            {
+                begin = begin.AddSeconds(cfg.StartDelaySec);
+                wait = true;
+            }
+            s.BeginAtTicks = wait ? begin.Ticks : 0;
+            s.ArmedWait = wait;
+        }
+
+        // Sit out the countdown. Sliced against the wall clock, so a stop
+        // (the hotkey again, StopAll, exit) cancels within a slice and a
+        // sleep/wake mid-wait lands the start on the right minute anyway.
+        // Returns false when the wait was cancelled.
+        static bool WaitBegin(Slot s, IntPtr timer)
+        {
+            if (s.BeginAtTicks == 0) return s.Run;
+            while (s.Run)
+            {
+                double remain = (new DateTime(s.BeginAtTicks) - DateTime.Now).TotalMilliseconds;
+                if (remain <= 0) break;
+                Wait(timer, Math.Min(remain, 250.0));
+            }
+            if (!s.Run) return false;
+            s.ArmedWait = false;
+            // Its stop-on-input choices count from now, not from the hotkey
+            ArmStopOnInput();
+            // And so does its time limit: "stop after 30 seconds" means 30
+            // seconds of clicking, not 30 seconds swallowed by the countdown
+            ArmStopClock(s, s.Cfg.StopSeconds);
+            return true;
+        }
+
+        // Seconds until an armed slot begins clicking, or -1 when the slot
+        // isn't in a countdown - the card's status line shows the wait.
+        public static int PendingSeconds(int id)
+        {
+            Slot s;
+            lock (Running) { if (!Running.TryGetValue(id, out s)) return -1; }
+            if (!s.ArmedWait) return -1;
+            double remain = (new DateTime(s.BeginAtTicks) - DateTime.Now).TotalSeconds;
+            return remain > 0 ? (int)Math.Ceiling(remain) : 0;
         }
 
         // phaseMs staggers the first click. Cards sharing one hotkey are given
@@ -866,17 +936,19 @@ namespace Polyclicker
             // batch arrive inside the same frame, and a game polling per frame
             // (Minecraft) never sees the key down at all. 1% forces them into
             // separate events with real time between.
-            int holdPct = cfg.HoldPercent > 0 ? Math.Min(90, cfg.HoldPercent)
+            int holdPct = cfg.HoldPercent > 0 ? Math.Min(99, cfg.HoldPercent)
                         : cfg.IsCustomKey ? 1 : 0;
-            s.HoldTicks = holdPct > 0 ? s.IntervalTicks * holdPct / 100 : 0;
+            // Held down: the press never lifts on its own - the button goes
+            // down and stays down until the card stops or its window gate
+            // closes. The "duration" is just a horizon no run reaches.
+            s.HoldForever = cfg.HoldDown;
+            s.HoldTicks = s.HoldForever ? long.MaxValue / 4
+                        : holdPct > 0 ? s.IntervalTicks * holdPct / 100 : 0;
             s.PhaseTicks = (long)(Freq * (phaseMs / 1000.0));
             s.Limit = cfg.StopClicks;
-            if (cfg.StopSeconds > 0)
-            {
-                long now; QueryPerformanceCounter(out now);
-                s.StopAtTick = now + (long)(Freq * cfg.StopSeconds);
-            }
+            ArmStopClock(s, cfg.StopSeconds);
             BuildInput(s);
+            ArmBegin(s, cfg);
             s.FixedSnap = cfg.IsFixed;
             s.Pinned = cfg.IsFixed && !cfg.IsCustomKey;
             if (s.Pinned) Interlocked.Increment(ref fixedRunning);
@@ -969,14 +1041,12 @@ namespace Polyclicker
             s.SpeedInv = 100.0 / Math.Max(SlotConfig.MacroSpeedMin,
                                  Math.Min(SlotConfig.MacroSpeedMax, cfg.MacroSpeed));
             s.JitterTicks = (long)(Freq * (cfg.JitterMs / 1000.0));
+            s.StepJitterTicks = (long)(Freq * (cfg.MacroJitterMs / 1000.0));
             s.Limit = cfg.StopClicks;
             // Loop off means exactly one pass, whatever the repeat limit says
             if (!cfg.MacroLoop) s.Limit = 1;
-            if (cfg.StopSeconds > 0)
-            {
-                long now; QueryPerformanceCounter(out now);
-                s.StopAtTick = now + (long)(Freq * cfg.StopSeconds);
-            }
+            ArmStopClock(s, cfg.StopSeconds);
+            ArmBegin(s, cfg);
             s.Run = true;
             lock (Running) Running[id] = s;
             lock (Live) Live.Add(s);        // exit/crash paths can see it now
@@ -999,23 +1069,15 @@ namespace Polyclicker
         // second to obey. Workers notice within one 30 ms wait slice and
         // clean themselves up in their finally; anything still in flight is
         // sacrificed (post-stop stragglers are vetoed at conversion anyway).
-        public static void Stop(int id)
-        {
-            Slot s = null;
-            lock (Running)
-            {
-                if (Running.TryGetValue(id, out s)) Running.Remove(id);
-            }
-            if (s == null) return;
-            s.Run = false;
-            ReturnCursor(s);
-        }
+        public static void Stop(int id) { Stop(id, false); }
 
         // Stop, minus anything that can wait on PointerLock - for callers
         // inside a low-level hook callback. ReturnCursor can block behind a
         // pace thread's SendInput retry loop; from a hook that stalls every
         // event on the machine, so the restore is handed to the pool instead.
-        public static void StopFromHook(int id)
+        public static void StopFromHook(int id) { Stop(id, true); }
+
+        static void Stop(int id, bool restoreOnPool)
         {
             Slot s = null;
             lock (Running)
@@ -1024,7 +1086,8 @@ namespace Polyclicker
             }
             if (s == null) return;
             s.Run = false;
-            ThreadPool.QueueUserWorkItem(delegate { ReturnCursor(s); });
+            if (restoreOnPool) ThreadPool.QueueUserWorkItem(delegate { ReturnCursor(s); });
+            else ReturnCursor(s);
         }
 
         // Signal every slot, then restore each pointer. Stop() per slot,
@@ -1244,7 +1307,7 @@ namespace Polyclicker
         // still honoured within a wait slice; the release fires either way -
         // the finally would catch it, but leaving a button down even briefly
         // reads as a stuck mouse.
-        static void HoldThenRelease(Slot s, IntPtr timer, IntPtr upEvent)
+        static void HoldThenRelease(Slot s, IntPtr timer, IntPtr downEvent, IntPtr upEvent)
         {
             s.HeldUp = upEvent;
             // The press we're sitting on may BE a modifier - flag it for the
@@ -1260,6 +1323,30 @@ namespace Polyclicker
                     QueryPerformanceCounter(out now);
                     long left = s.HoldTicks - (now - start);
                     if (left <= 0) break;
+                    // A hold-forever press still honours the card's other
+                    // exits: its stop-after clock, and its window gate - the
+                    // button must not stay down while the user is somewhere
+                    // else. The pace loop re-presses when the gate reopens.
+                    if (s.HoldForever)
+                    {
+                        if (s.StopAtTick != 0 && now >= s.StopAtTick) break;
+                        if (!MayFire(s)) break;
+                        // While a macro drives, the take owns the input; when
+                        // it goes quiet the hold re-asserts itself. For a KEY
+                        // that means real typematic: a finger never holds a
+                        // key with one event - the keyboard repeats the down
+                        // ~30 times a second, and programs lean on that. A
+                        // game that clears its input state (opening its menu
+                        // unpresses every held key, whatever Windows says)
+                        // only re-notices the key on the next repeat, so the
+                        // hold ticks them out too. Buttons don't repeat; they
+                        // just re-press once a macro has released them.
+                        if (!MacroBlind()
+                            && (s.Cfg.IsCustomKey
+                                || (s.WaitVk != 0
+                                    && (GetAsyncKeyState(s.WaitVk) & 0x8000) == 0)))
+                            SendInput(1, downEvent, InputSize);
+                    }
                     Wait(timer, Math.Min(left * 1000.0 / Freq, 30.0));
                 }
                 SendInput(1, upEvent, InputSize);
@@ -1320,6 +1407,15 @@ namespace Polyclicker
             }
         }
 
+        // "Stop after N seconds", counted from now; 0 means no clock
+        static void ArmStopClock(Slot s, int seconds)
+        {
+            if (seconds <= 0) return;
+            long now;
+            QueryPerformanceCounter(out now);
+            s.StopAtTick = now + (long)(Freq * seconds);
+        }
+
         static long NextGap(Slot s)
         {
             long step = s.IntervalTicks;
@@ -1334,9 +1430,18 @@ namespace Polyclicker
                                                   TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
             try
             {
+                // A start delay or scheduled time counts down first; a stop
+                // during the wait falls through to the finally's cleanup
+                if (!WaitBegin(s, timer)) return;
+
+                // The first beat fires NOW (plus the multi-card stagger), not
+                // an interval from now: a cycle is press first, idle after,
+                // so the release phase sits at the END of each click. With a
+                // long interval and a hold this is the whole feel of the card
+                // - starting it must press, not sit out a silent interval.
                 long next;
                 QueryPerformanceCounter(out next);
-                next += s.PhaseTicks + NextGap(s);
+                next += s.PhaseTicks;
                 double msPerTick = 1000.0 / Freq;
 
                 while (s.Run)
@@ -1509,6 +1614,10 @@ namespace Polyclicker
                                     u.U.mi.dwFlags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
                                     Marshal.StructureToPtr(d, s.NativeBuf, false);
                                     Marshal.StructureToPtr(u, IntPtr.Add(s.NativeBuf, InputSize), false);
+                                    // Slot [2]: the button alone, for the hold
+                                    // loop's re-press. The down above carries
+                                    // the move; re-pressing must not re-park.
+                                    Marshal.StructureToPtr(s.Buf[0], IntPtr.Add(s.NativeBuf, InputSize * 2), false);
                                     if (s.HoldTicks > 0)
                                     {
                                         // Press now, release after the hold.
@@ -1554,9 +1663,13 @@ namespace Polyclicker
                             // own coordinates, so nothing can misplace it.
                             if (holdPending)
                             {
-                                HoldThenRelease(s, timer, s.Cfg.IsCustomKey
-                                    ? IntPtr.Add(s.NativeBuf, InputSize * 2)
-                                    : IntPtr.Add(s.NativeBuf, InputSize));
+                                HoldThenRelease(s, timer,
+                                    s.Cfg.IsCustomKey
+                                        ? IntPtr.Add(s.NativeBuf, InputSize)
+                                        : IntPtr.Add(s.NativeBuf, InputSize * 2),
+                                    s.Cfg.IsCustomKey
+                                        ? IntPtr.Add(s.NativeBuf, InputSize * 2)
+                                        : IntPtr.Add(s.NativeBuf, InputSize));
                                 if (s.Cfg.RestoreCursor) ReturnCursor(s);
                             }
                         }
@@ -1566,7 +1679,9 @@ namespace Polyclicker
                             if (s.HoldTicks > 0)
                             {
                                 if (SendInput(1, IntPtr.Add(s.NativeBuf, InputSize), InputSize) == 1)
-                                    HoldThenRelease(s, timer, IntPtr.Add(s.NativeBuf, InputSize * 2));
+                                    HoldThenRelease(s, timer,
+                                        IntPtr.Add(s.NativeBuf, InputSize),
+                                        IntPtr.Add(s.NativeBuf, InputSize * 2));
                             }
                             else
                                 SendInput(2, IntPtr.Add(s.NativeBuf, InputSize), InputSize);
@@ -1638,6 +1753,9 @@ namespace Polyclicker
             IntPtr one = Marshal.AllocHGlobal(InputSize);
             try
             {
+                // Same later-start countdown as a clicker's pace loop
+                if (!WaitBegin(s, timer)) return;
+
                 Ev[] evs = s.Macro;
                 double msPerTick = 1000.0 / Freq;
 
@@ -1677,9 +1795,30 @@ namespace Polyclicker
                     Interlocked.Increment(ref macroDriving);
                     try
                     {
+                        // Apps sample input by the frame, and injected keyboard
+                        // and pointer input even travel different routes in -
+                        // so two events close enough together can be seen out
+                        // of order, and a press-and-release compressed by the
+                        // speed setting below a frame is a click that never
+                        // happened. Every press or release therefore keeps a
+                        // little air on both sides, whatever the speed; only
+                        // pointer samples compress freely - a fast-forwarded
+                        // path is still a path. Local only: later events keep
+                        // their own due times, so the take doesn't drift.
+                        long minPress = Freq / 100;              // 10 ms
+                        long lastEmit = 0;
                         for (int i = 0; i < evs.Length && s.Run; i++)
                         {
                             long due = start + (long)(evs[i].Off * s.SpeedInv);
+                            // Step jitter moves presses and releases, never
+                            // pointer samples - a nudged path is just jagged.
+                            // Order can't break: events go out in sequence
+                            // and the floor below keeps each after the last.
+                            if (s.StepJitterTicks > 0 && IsPress(evs[i].Type))
+                                due += (long)((s.Rng.NextDouble() * 2.0 - 1.0) * s.StepJitterTicks);
+                            if (lastEmit != 0 && i > 0
+                                && (IsPress(evs[i - 1].Type) || IsPress(evs[i].Type)))
+                                due = Math.Max(due, lastEmit + minPress);
                             while (s.Run)
                             {
                                 long now;
@@ -1697,7 +1836,15 @@ namespace Polyclicker
                             // back. Aborting here leaves the user's window alone;
                             // ReleaseHeld below lets go of anything mid-gesture.
                             if (!MayFire(s)) { aborted = true; break; }
-                            Emit(s, evs[i], one);
+                            // A pointer sample the next sample overtakes
+                            // within 2 ms is work nobody can see: a 1 kHz
+                            // mouse's take plays at 500 Hz, ends and clicks
+                            // in exactly the same places
+                            if (evs[i].Type == 0 && i + 1 < evs.Length && evs[i + 1].Type == 0
+                                && (evs[i + 1].Off - evs[i].Off) * s.SpeedInv < Freq / 500)
+                                continue;
+                            Emit(s, evs[i], one, i + 1 >= evs.Length || evs[i + 1].Type != 0);
+                            QueryPerformanceCounter(out lastEmit);
                         }
                     }
                     finally
@@ -1756,14 +1903,23 @@ namespace Polyclicker
             }
         }
 
-        static void Emit(Slot s, Ev e, IntPtr one)
+        // A button or key going down or up - the events whose timing decides
+        // whether a gesture registers at all
+        static bool IsPress(byte type) { return type >= 1 && type <= 4; }
+
+        static void Emit(Slot s, Ev e, IntPtr one) { Emit(s, e, one, true); }
+
+        // settle: also park the OS cursor exactly on a move's pixel. Only the
+        // last move before a press needs it - mid-path samples are overtaken
+        // by the next one before anything reads the cursor.
+        static void Emit(Slot s, Ev e, IntPtr one, bool settle)
         {
             lock (PointerLock)
             {
                 switch (e.Type)
                 {
                     case 0:
-                        MoveTo(one, e.A + s.RelDX, e.B + s.RelDY);
+                        MoveTo(one, e.A + s.RelDX, e.B + s.RelDY, settle);
                         break;
                     case 1:
                     case 2:

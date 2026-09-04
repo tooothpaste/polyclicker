@@ -65,12 +65,12 @@ namespace Polyclicker
             {
                 // glyph beside centered text
                 int tw = TextRenderer.MeasureText(Text, Font).Width;
-                int total = 18 + 4 + tw;
+                int total = Theme.S(18 + 4) + tw;
                 int sx = (Width - total) / 2;
-                Glyphs.Draw(e.Graphics, new Rectangle(sx, Height / 2 - 10, 20, 20), Kind,
+                Glyphs.Draw(e.Graphics, new Rectangle(sx, Height / 2 - Theme.S(10), Theme.S(20), Theme.S(20)), Kind,
                             cs.Text, hot ? cs.Hot : cs.Back);
                 TextRenderer.DrawText(e.Graphics, Text, Font,
-                    new Point(sx + 22, (Height - Font.Height) / 2 - 1), cs.Text,
+                    new Point(sx + Theme.S(22), (Height - Font.Height) / 2 - 1), cs.Text,
                     TextFormatFlags.NoPrefix);
             }
             else
@@ -130,17 +130,19 @@ namespace Polyclicker
             using (var b = new SolidBrush(BackColor)) g.FillRectangle(b, ClientRectangle);
             var prev = g.SmoothingMode;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            var ring = new Rectangle(1, (Height - 14) / 2, 13, 13);
+            int rd = Theme.S(13);
+            var ring = new Rectangle(1, (Height - rd - 1) / 2, rd, rd);
             using (var b = new SolidBrush(Theme.FieldBack)) g.FillEllipse(b, ring);
             using (var p = new Pen(isChecked ? Theme.Accent
-                                 : hot ? Theme.MutedText : Theme.FieldLine, 1.4f))
+                                 : hot ? Theme.MutedText : Theme.FieldLine, Theme.Sf(1.4f)))
                 g.DrawEllipse(p, ring);
             if (isChecked)
                 using (var b = new SolidBrush(Theme.Accent))
-                    g.FillEllipse(b, ring.X + 4, ring.Y + 4, ring.Width - 8, ring.Height - 8);
+                    g.FillEllipse(b, ring.X + Theme.S(4), ring.Y + Theme.S(4),
+                                  ring.Width - Theme.S(8), ring.Height - Theme.S(8));
             g.SmoothingMode = prev;
             TextRenderer.DrawText(g, Text, Font,
-                new Rectangle(ring.Right + 7, 0, Width - ring.Right - 7, Height),
+                new Rectangle(ring.Right + Theme.S(7), 0, Width - ring.Right - Theme.S(7), Height),
                 Theme.FormText,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter
               | TextFormatFlags.NoPrefix);
@@ -171,7 +173,7 @@ namespace Polyclicker
         int top;                    // first visible row (long lists scroll)
         readonly int visible;
 
-        int ItemH { get { return Font.Height + 8; } }
+        int ItemH { get { return Font.Height + Theme.S(8); } }
 
         public static void Open(Control anchor, Rectangle screenRect,
                                 IList<string> items, string current, Action<string> onPick)
@@ -204,7 +206,7 @@ namespace Polyclicker
 
             HandleCreated += delegate { Theme.RoundPopup(Handle); };
 
-            ClientSize = new Size(Math.Max(120, at.Width), visible * ItemH + 2);
+            ClientSize = new Size(Math.Max(Theme.S(120), at.Width), visible * ItemH + 2);
             Rectangle scr = Screen.FromPoint(at.Location).WorkingArea;
             int x = Math.Max(scr.Left + 2, Math.Min(at.Left, scr.Right - Width - 2));
             int y = at.Bottom + 1;
@@ -253,7 +255,7 @@ namespace Polyclicker
                                                              : Color.FromArgb(230, 230, 236)))
                         g.FillRectangle(b, r);
                 TextRenderer.DrawText(g, items[i], Font,
-                    Optical(new Rectangle(r.X + 7, r.Y, r.Width - 12, r.Height)),
+                    Optical(new Rectangle(r.X + Theme.S(7), r.Y, r.Width - Theme.S(12), r.Height)),
                     Theme.DropText,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter
                   | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
@@ -336,7 +338,7 @@ namespace Polyclicker
             var r = new Rectangle(0, 0, Width - 1, Height - 1);
             var prevSm = g.SmoothingMode;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var path = Theme.RoundPath(r, 4))
+            using (var path = Theme.RoundPath(r, Theme.S(4)))
             {
                 using (var b = new SolidBrush(hot ? Theme.DropHot : Theme.DropBack))
                     g.FillPath(b, path);
@@ -348,20 +350,9 @@ namespace Polyclicker
                                      | TextFormatFlags.NoPadding;
             bool empty = Text.Length == 0;
             TextRenderer.DrawText(g, empty ? Placeholder : Text, Font,
-                Optical(new Rectangle(8, 0, Math.Max(4, Width - 30), Height)),
+                Optical(new Rectangle(Theme.S(8), 0, Math.Max(4, Width - Theme.S(30)), Height)),
                 empty ? Theme.MutedText : Theme.DropText, TF);
-            // the arrow, in the same stroke style as everything else
-            var prev = g.SmoothingMode;
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var p = new Pen(Theme.MutedText, 1.6f))
-            {
-                p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                float ax = Width - 14, ay = Height / 2f - 1.5f;
-                g.DrawLine(p, ax - 3.5f, ay, ax, ay + 3.5f);
-                g.DrawLine(p, ax + 3.5f, ay, ax, ay + 3.5f);
-            }
-            g.SmoothingMode = prev;
+            Glyphs.Chevron(g, Width - Theme.S(14), Height / 2f - Theme.Sf(1.5f), Theme.MutedText);
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -388,7 +379,9 @@ namespace Polyclicker
 
     sealed class ColorPopup : Form
     {
-        const int Pad = 10, Step = 28, DotR = 7;
+        static int Pad { get { return Theme.S(10); } }
+        static int Step { get { return Theme.S(28); } }
+        static int DotR { get { return Theme.S(7); } }
 
         readonly Action<string> pick;
         readonly string current;
@@ -404,7 +397,7 @@ namespace Polyclicker
             TopMost = true;
             DoubleBuffered = true;
             BackColor = Theme.Dark ? Color.FromArgb(43, 43, 50) : Color.White;
-            ClientSize = new Size(Pad * 2 + Step * Theme.Palette.Length, 36);
+            ClientSize = new Size(Pad * 2 + Step * Theme.Palette.Length, Theme.S(36));
             KeyPreview = true;
             KeyDown += delegate(object s, KeyEventArgs e)
             {
@@ -416,8 +409,8 @@ namespace Polyclicker
             // At the cursor, nudged back onto the screen at edges
             Point p = Cursor.Position;
             Rectangle scr = Screen.FromPoint(p).WorkingArea;
-            int x = Math.Min(p.X - 12, scr.Right - Width - 4);
-            int y = Math.Min(p.Y + 14, scr.Bottom - Height - 4);
+            int x = Math.Min(p.X - Theme.S(12), scr.Right - Width - 4);
+            int y = Math.Min(p.Y + Theme.S(14), scr.Bottom - Height - 4);
             Location = new Point(Math.Max(scr.Left + 4, x), Math.Max(scr.Top + 4, y));
         }
 
@@ -455,23 +448,24 @@ namespace Polyclicker
             {
                 Rectangle cell = CellAt(i);
                 float cx = cell.X + cell.Width / 2f, cy = ClientSize.Height / 2f;
+                float hr = Theme.Sf(11f), ringPad = Theme.Sf(3.5f);
                 if (i == hot)
                     using (var b = new SolidBrush(Theme.ChipHot))
-                        g.FillEllipse(b, cx - 11, cy - 11, 22, 22);
+                        g.FillEllipse(b, cx - hr, cy - hr, hr * 2, hr * 2);
 
                 CardTint t = Theme.Palette[i];
                 Color dot = Theme.SwatchOf(t.Name);
                 if (t.Name.Length == 0)
-                    using (var p = new Pen(dot, 1.8f))
+                    using (var p = new Pen(dot, Theme.Sf(1.8f)))
                         g.DrawEllipse(p, cx - DotR, cy - DotR, DotR * 2, DotR * 2);
                 else
                     using (var b = new SolidBrush(dot))
                         g.FillEllipse(b, cx - DotR, cy - DotR, DotR * 2, DotR * 2);
 
                 if (t.Name == current)
-                    using (var p = new Pen(Theme.FormText, 1.6f))
-                        g.DrawEllipse(p, cx - DotR - 3.5f, cy - DotR - 3.5f,
-                                      (DotR + 3.5f) * 2, (DotR + 3.5f) * 2);
+                    using (var p = new Pen(Theme.FormText, Theme.Sf(1.6f)))
+                        g.DrawEllipse(p, cx - DotR - ringPad, cy - DotR - ringPad,
+                                      (DotR + ringPad) * 2, (DotR + ringPad) * 2);
             }
         }
 

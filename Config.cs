@@ -35,6 +35,9 @@ namespace Polyclicker
         // so it scales with the click rate instead of being retuned by hand.
         // 0 = instant press-and-release, the original behaviour.
         public int HoldPercent;
+        // Not clicking at all: the input goes down once and stays down for
+        // the whole run. The interval doesn't apply while this is on.
+        public bool HoldDown;
         public bool FocusWindow;
         public bool FlickFocus;                 // per-click: focus gate, click, focus back
         public bool HotkeyOff;                  // per-card lock, inverted on disk
@@ -55,11 +58,20 @@ namespace Polyclicker
         // takes carry ~8-15 ms between pointer samples; 20x covers the whole
         // range where the knob still buys speed, without a dead zone above.
         public int MacroSpeed = 100;
+        // Every press and release in a take lands up to this far from its
+        // recorded moment, so repeated passes don't fire identically
+        public int MacroJitterMs;
         public const int MacroSpeedMin = 10;
         public const int MacroSpeedMax = 2000;
         // Off: the take plays through once per hotkey press. On (the original
         // behaviour, and the default): it repeats until stopped.
         public bool MacroLoop = true;
+        // Later starts. The delay counts down after the hotkey (seconds,
+        // 0 = at once); StartAt ("HH:MM", 24-hour, empty = off) waits for the
+        // next such wall-clock time instead. With both set the delay counts
+        // from the scheduled time. Pressing the hotkey again cancels the wait.
+        public int StartDelaySec;
+        public string StartAt = "";
 
         public string Color = "";               // card tint, by palette name
         public bool Collapsed;                  // rolled up to a single line
@@ -72,6 +84,21 @@ namespace Polyclicker
         public SlotConfig Clone()
         {
             return (SlotConfig)MemberwiseClone();
+        }
+
+        // "H:MM" or "HH:MM", 24-hour. The colon is required - a bare number
+        // is ambiguous between hours and minutes, so it doesn't parse.
+        public static bool TryParseStartAt(string text, out int hh, out int mm)
+        {
+            hh = mm = 0;
+            if (text == null) return false;
+            string[] parts = text.Trim().Split(':');
+            if (parts.Length != 2) return false;
+            if (!int.TryParse(parts[0].Trim(), NumberStyles.Integer,
+                              CultureInfo.InvariantCulture, out hh)) return false;
+            if (!int.TryParse(parts[1].Trim(), NumberStyles.Integer,
+                              CultureInfo.InvariantCulture, out mm)) return false;
+            return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
         }
 
         // The window gate as the user reads it: "ahk_exe game.exe" is how the
@@ -97,15 +124,11 @@ namespace Polyclicker
 
     static class Ini
     {
+        // Read-only: every write goes through AppConfig.WriteAtomic, which
+        // renders the whole file itself
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         static extern int GetPrivateProfileStringW(string sec, string key, string def,
                                                    StringBuilder ret, int size, string file);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-        static extern bool WritePrivateProfileStringW(string sec, string key, string val, string file);
-        // Writing a whole section in one call rather than key at a time:
-        // key-at-a-time is a separate full-file rewrite per key - 18 per card.
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-        static extern bool WritePrivateProfileSectionW(string sec, string data, string file);
 
         public static string Read(string file, string sec, string key, string def)
         {
@@ -125,26 +148,6 @@ namespace Polyclicker
         {
             return ReadInt(file, sec, key, def ? 1 : 0) != 0;
         }
-
-        public static void Write(string file, string sec, string key, string val)
-        {
-            WritePrivateProfileStringW(sec, key, val, file);
-        }
-
-        // pairs are "Key=Value"; the API wants them NUL-separated and double
-        // NUL-terminated, and it replaces the whole section in one write.
-        public static void WriteSection(string file, string sec, IEnumerable<string> pairs)
-        {
-            var sb = new StringBuilder();
-            foreach (string p in pairs) { sb.Append(p); sb.Append('\0'); }
-            sb.Append('\0');
-            WritePrivateProfileSectionW(sec, sb.ToString(), file);
-        }
-
-        public static void DeleteSection(string file, string sec)
-        {
-            WritePrivateProfileStringW(sec, null, null, file);
-        }
     }
 
     // Everything the app persists: the cards, the global hotkeys, the window.
@@ -158,6 +161,9 @@ namespace Polyclicker
         // reads "Cookie Clicker" after a restart instead of sitting blank
         public string CurrentProfile = "";
         public string ThemeMode = "light";      // light | dark | system
+        // Percent, on top of the display's DPI - 100 draws the layout at the
+        // size Windows says; smaller makes a 125% laptop screen feel like 100%
+        public int UiScale = 100;
         public int WinX = int.MinValue, WinY = int.MinValue, WinW, WinH;
 
         // Data lives in the user's roaming AppData, so the exe is a single
@@ -199,18 +205,24 @@ namespace Polyclicker
                 // data wins and the rest are skipped
                 string appData =
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                MigrateFrom(Path.Combine(appData, "Multiclicker"), d);
-                MigrateFrom(Path.Combine(appData, "Multi Auto-Clicker"), d);
-                MigrateLegacy(d);
+                MigrateFrom(Path.Combine(appData, "Multiclicker"), d, "");
+                MigrateFrom(Path.Combine(appData, "Multi Auto-Clicker"), d, "");
+                MigrateFrom(AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'), d,
+                            "beside the exe: ");
                 return _dir;
             }
         }
 
         // The app has been renamed twice - Multi Auto-Clicker, then
-        // Multiclicker. The first run copies the newest older folder's data
-        // across. Copied, not moved - the old folder stays as a backup until
-        // the user deletes it.
-        static void MigrateFrom(string src, string dest)
+        // Multiclicker - and earlier still kept its data beside the exe. The
+        // first run against an empty folder copies the newest older data
+        // across, so upgrading never costs anyone their cards, profiles or
+        // recordings. Copied, not moved - the old location stays as a backup
+        // until the user deletes it. The log trail says where it came from:
+        // migration seeds a fresh folder with data that may be years stale,
+        // and an app that comes up half-configured looks broken in ways an
+        // empty one doesn't.
+        static void MigrateFrom(string src, string dest, string note)
         {
             try
             {
@@ -221,37 +233,13 @@ namespace Polyclicker
                 System.IO.File.Copy(oldIni, newIni);
                 CopyAll(Path.Combine(src, "Macros"), Path.Combine(dest, "Macros"), "*.macro");
                 CopyAll(Path.Combine(src, "Profiles"), Path.Combine(dest, "Profiles"), "*.ini");
-                // Migration seeds a fresh folder with data that may be years
-                // stale, and an app that comes up half-configured looks broken
-                // in ways an empty one doesn't. The trail says where it came
-                // from.
-                Log.Line("migrated data from " + src);
+                Log.Line("migrated data from " + note + src);
             }
             catch { }   // a failed migration just means starting fresh
         }
         public static string File { get { return Path.Combine(Dir, "AutoClickerProfiles.ini"); } }
         public static string MacroDir { get { return Path.Combine(Dir, "Macros"); } }
         public static string ProfileDir { get { return Path.Combine(Dir, "Profiles"); } }
-
-        // Earlier builds kept everything next to the exe. The first run against an empty AppData folder copies that data
-        // across, so upgrading never costs anyone their cards, profiles or
-        // recordings. Copied rather than moved: the older install keeps working.
-        static void MigrateLegacy(string dest)
-        {
-            try
-            {
-                string src = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-                string oldIni = Path.Combine(src, "AutoClickerProfiles.ini");
-                string newIni = Path.Combine(dest, "AutoClickerProfiles.ini");
-                if (!System.IO.File.Exists(oldIni) || System.IO.File.Exists(newIni)) return;
-
-                System.IO.File.Copy(oldIni, newIni);
-                CopyAll(Path.Combine(src, "Macros"), Path.Combine(dest, "Macros"), "*.macro");
-                CopyAll(Path.Combine(src, "Profiles"), Path.Combine(dest, "Profiles"), "*.ini");
-                Log.Line("migrated data from beside the exe: " + src);
-            }
-            catch { }   // a failed migration just means starting fresh
-        }
 
         static void CopyAll(string from, string to, string pattern)
         {
@@ -280,6 +268,7 @@ namespace Polyclicker
             cfg.KillSwitchKey  = Ini.Read(f, "Global", "KillSwitch", cfg.KillSwitchKey);
             cfg.RecordKey      = Ini.Read(f, "Global", "Record", cfg.RecordKey);
             cfg.CurrentProfile = Ini.Read(f, "Global", "Profile", "");
+            cfg.UiScale        = Math.Max(50, Math.Min(300, Ini.ReadInt(f, "Global", "UiScale", 100)));
             // Theme= is the setting; older files only carry the Dark= bool
             string tm = Ini.Read(f, "Global", "Theme", "").Trim().ToLowerInvariant();
             cfg.ThemeMode = (tm == "light" || tm == "dark" || tm == "system") ? tm
@@ -314,9 +303,12 @@ namespace Polyclicker
             s.StopSeconds   = Ini.ReadInt(file, sec, "StopSeconds", 0);
             s.JitterMs      = Math.Max(0, Ini.ReadInt(file, sec, "JitterMs", 0));
             s.PosJitter     = Math.Max(0, Ini.ReadInt(file, sec, "PosJitter", 0));
-            // 90% ceiling: a press that fills its whole interval never lifts,
-            // so the next beat has nothing to press
-            s.HoldPercent   = Math.Max(0, Math.Min(90, Ini.ReadInt(file, sec, "HoldPercent", 0)));
+            // 99% ceiling: a press that fills its whole interval never lifts,
+            // which is its own setting now. Files that stored 100 while that
+            // lived here migrate to the toggle.
+            int rawHold     = Ini.ReadInt(file, sec, "HoldPercent", 0);
+            s.HoldPercent   = Math.Max(0, Math.Min(99, rawHold));
+            s.HoldDown      = Ini.ReadBool(file, sec, "HoldDown", false) || rawHold >= 100;
             s.FocusWindow   = Ini.ReadBool(file, sec, "FocusWindow", false);
             s.FlickFocus    = Ini.ReadBool(file, sec, "FlickFocus", false);
             s.HotkeyOff     = Ini.ReadBool(file, sec, "HotkeyOff", false);
@@ -330,7 +322,13 @@ namespace Polyclicker
             s.MacroSpeed    = Math.Max(SlotConfig.MacroSpeedMin,
                               Math.Min(SlotConfig.MacroSpeedMax,
                                        Ini.ReadInt(file, sec, "MacroSpeed", 100)));
+            s.MacroJitterMs = Math.Max(0, Ini.ReadInt(file, sec, "MacroJitterMs", 0));
             s.MacroLoop     = Ini.ReadBool(file, sec, "MacroLoop", true);
+            // A day is the ceiling either way: longer is a typo, not a plan
+            s.StartDelaySec = Math.Max(0, Math.Min(86400, Ini.ReadInt(file, sec, "StartDelay", 0)));
+            int ahh, amm;
+            s.StartAt = SlotConfig.TryParseStartAt(Ini.Read(file, sec, "StartAt", ""), out ahh, out amm)
+                      ? ahh.ToString("00") + ":" + amm.ToString("00") : "";
             s.Color         = Ini.Read(file, sec, "Color", "").Trim().ToLowerInvariant();
             s.Collapsed     = Ini.ReadBool(file, sec, "Collapsed", false);
 
@@ -365,6 +363,7 @@ namespace Polyclicker
             sb.AppendLine("KillSwitch=" + KillSwitchKey);
             sb.AppendLine("Record=" + RecordKey);
             sb.AppendLine("Profile=" + CurrentProfile);
+            sb.AppendLine("UiScale=" + UiScale.ToString(CultureInfo.InvariantCulture));
             sb.AppendLine("Theme=" + ThemeMode);
             // Dark= kept as the resolved value, so an older build reading this
             // file still comes up in the right colors
@@ -402,13 +401,55 @@ namespace Polyclicker
         // recognises.
         static void WriteAtomic(string file, string text)
         {
+            WriteAtomic(file, text, Encoding.Unicode);
+        }
+
+        // Write-beside-and-swap: a crash mid-save leaves the old file intact,
+        // never half of a new one. Shared with the macro editor's saves.
+        public static void WriteAtomic(string file, string text, Encoding enc)
+        {
             string tmp = file + ".tmp";
-            System.IO.File.WriteAllText(tmp, text, Encoding.Unicode);
+            System.IO.File.WriteAllText(tmp, text, enc);
             if (System.IO.File.Exists(file)) System.IO.File.Replace(tmp, file, null);
             else System.IO.File.Move(tmp, file);
         }
 
         void AppendSlots(StringBuilder sb) { AppendSlots(sb, Slots); }
+
+        // The current cards as one portable file: the profile INI plus every
+        // take it references, zipped. Unpacking into another machine's
+        // %APPDATA%\Polyclicker (Profiles\ and Macros\) is the import.
+        public void ExportBundle(string zipPath)
+        {
+            string tmp = Path.Combine(Path.GetTempPath(),
+                "polyclicker-export-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                string name = CurrentProfile.Length > 0 ? CurrentProfile : "Profile";
+                Directory.CreateDirectory(Path.Combine(tmp, "Profiles"));
+                WriteSlotsTo(Path.Combine(tmp, "Profiles", name + ".ini"));
+                var takes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (SlotConfig s in Slots)
+                    if (s.Macro.Trim().Length > 0) takes.Add(s.Macro.Trim());
+                if (takes.Count > 0)
+                {
+                    Directory.CreateDirectory(Path.Combine(tmp, "Macros"));
+                    foreach (string t in takes)
+                    {
+                        string src = Path.Combine(MacroDir, t);
+                        if (System.IO.File.Exists(src))
+                            System.IO.File.Copy(src, Path.Combine(tmp, "Macros", t));
+                    }
+                }
+                if (System.IO.File.Exists(zipPath)) System.IO.File.Delete(zipPath);
+                System.IO.Compression.ZipFile.CreateFromDirectory(tmp, zipPath);
+            }
+            finally
+            {
+                try { Directory.Delete(tmp, true); } catch { }
+            }
+        }
 
         // What "these auto-clickers" are, as text. Comparing this against the
         // same rendering of a profile on disk answers "is there unsaved work
@@ -443,6 +484,7 @@ namespace Polyclicker
                 sb.AppendLine("JitterMs=" + s.JitterMs.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("PosJitter=" + s.PosJitter.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("HoldPercent=" + s.HoldPercent.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("HoldDown=" + (s.HoldDown ? "1" : "0"));
                 sb.AppendLine("FocusWindow=" + (s.FocusWindow ? "1" : "0"));
                 sb.AppendLine("FlickFocus=" + (s.FlickFocus ? "1" : "0"));
                 sb.AppendLine("HotkeyOff=" + (s.HotkeyOff ? "1" : "0"));
@@ -451,7 +493,10 @@ namespace Polyclicker
                 sb.AppendLine("StopOnKeys=" + (s.StopOnKeys ? "1" : "0"));
                 sb.AppendLine("MacroRelative=" + (s.MacroRelative ? "1" : "0"));
                 sb.AppendLine("MacroSpeed=" + s.MacroSpeed.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("MacroJitterMs=" + s.MacroJitterMs.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("MacroLoop=" + (s.MacroLoop ? "1" : "0"));
+                sb.AppendLine("StartDelay=" + s.StartDelaySec.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("StartAt=" + s.StartAt);
                 sb.AppendLine("Color=" + s.Color);
                 sb.AppendLine("Collapsed=" + (s.Collapsed ? "1" : "0"));
             }

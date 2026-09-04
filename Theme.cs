@@ -11,6 +11,7 @@
 // ===========================================================================
 
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -247,18 +248,6 @@ namespace Polyclicker
             }
         }
 
-        public static ChipStyle GearChip
-        {
-            get
-            {
-                return Dark
-                    ? new ChipStyle(Color.FromArgb(64, 64, 71), Color.FromArgb(80, 80, 89),
-                                    Color.FromArgb(102, 103, 112), Color.FromArgb(203, 203, 213))
-                    : new ChipStyle(Color.FromArgb(233, 233, 238), Color.FromArgb(221, 221, 229),
-                                    Color.FromArgb(176, 176, 187), Color.FromArgb(86, 86, 96));
-            }
-        }
-
         // In-card buttons follow their card's tint: a step lighter than the
         // card in light mode, a step darker in dark mode, glyph in the deep hue
         public static ChipStyle TintChip(string tintName)
@@ -373,7 +362,7 @@ namespace Polyclicker
             {
                 try
                 {
-                    var f = new Font(n, size, style);
+                    var f = new Font(n, size, style, GraphicsUnit.Pixel);
                     // GDI truncates face names to 31 chars, so a long name that
                     // loaded fine comes back clipped - match by prefix
                     if (string.Equals(f.Name, n, StringComparison.OrdinalIgnoreCase)
@@ -383,16 +372,75 @@ namespace Polyclicker
                 }
                 catch { }
             }
-            return new Font("Segoe UI", size, style);
+            return new Font("Segoe UI", size, style, GraphicsUnit.Pixel);
         }
 
+        // --- scale --------------------------------------------------------------
+        // One factor for everything drawn: the display's DPI (the app is
+        // DPI-aware, so Windows asks it to draw at 96 dpi times this) times
+        // the user's UI-size setting. Every layout number in the app is
+        // authored at 100% and read through S(); fonts are specified in
+        // pixels so text follows the same factor as the boxes around it.
+        static float _dpiScale = -1;
+        public static float UserScale = 1f;         // Settings, 1.0 = 100%
+
+        public static float DpiScale
+        {
+            get
+            {
+                if (_dpiScale < 0)
+                {
+                    try { using (var g = Graphics.FromHwnd(IntPtr.Zero)) _dpiScale = g.DpiX / 96f; }
+                    catch { _dpiScale = 1f; }
+                }
+                return _dpiScale;
+            }
+            set { _dpiScale = value; }      // WM_DPICHANGED: the window's monitor
+        }
+
+        public static float Scale { get { return DpiScale * UserScale; } }
+
+        // Zoom: Ctrl+= / Ctrl+- step the UI-size setting, Ctrl+0 resets it.
+        // Any window's key handler asks here; the main window owns the work
+        // (it persists the setting and cascades to open editors).
+        public static Action<int> Zoom;             // +1, -1, 0 = reset
+
+        public static bool ZoomKey(Keys keyData)
+        {
+            if ((keyData & Keys.Control) == 0 || Zoom == null) return false;
+            Keys k = keyData & Keys.KeyCode;
+            if (k == Keys.Oemplus || k == Keys.Add) { Zoom(1); return true; }
+            if (k == Keys.OemMinus || k == Keys.Subtract) { Zoom(-1); return true; }
+            if (k == Keys.D0 || k == Keys.NumPad0) { Zoom(0); return true; }
+            return false;
+        }
+
+        // After a scale change the cached fonts are the wrong size; the next
+        // reader gets fresh ones. The old objects stay alive for any control
+        // still holding them - a DPI change is rare enough to leak a font.
+        public static void ResetFonts() { _ui = null; _title = null; }
+
+        [DllImport("user32.dll")] static extern int GetDpiForWindow(IntPtr hwnd);
+
+        // The DPI a window actually sits at - its monitor's under per-monitor
+        // awareness. 0 when the OS predates the call (then the system DPI,
+        // which is what the process is scaled to anyway, is the truth).
+        public static int WindowDpi(IntPtr hwnd)
+        {
+            try { return GetDpiForWindow(hwnd); }
+            catch { return 0; }
+        }
+        public static int S(int px) { return (int)Math.Round(px * Scale); }
+        public static float Sf(float px) { return px * Scale; }
+
+        // 13 px is 9.75 pt at 96 dpi; 20.67 px is 15.5 pt
         public static Font UIFont
         {
             get
             {
                 if (_ui == null)
                     _ui = FirstInstalled(new string[] { "Segoe UI Variable Text", "Segoe UI" },
-                                         9.75f, FontStyle.Regular);
+                                         Sf(13f), FontStyle.Regular);
                 return _ui;
             }
         }
@@ -404,32 +452,12 @@ namespace Polyclicker
                 if (_title == null)
                     _title = FirstInstalled(new string[] { "Segoe UI Variable Display Semilight",
                                                            "Segoe UI Semilight", "Segoe UI Light", "Segoe UI" },
-                                            15.5f, FontStyle.Regular);
+                                            Sf(20.67f), FontStyle.Regular);
                 return _title;
             }
         }
 
         // --- applying to real controls (dialogs, the bottom strip) -------------
-
-        public static void Style(Button b)
-        {
-            if (Dark)
-            {
-                b.FlatStyle = FlatStyle.Flat;
-                b.BackColor = ChipBack;
-                b.ForeColor = ChipText;
-                b.FlatAppearance.BorderColor = ChipLine;
-                b.FlatAppearance.MouseOverBackColor = ChipHot;
-            }
-            else
-            {
-                // System-drawn buttons cannot render an Image; anything
-                // carrying a glyph uses the themed Standard renderer instead
-                b.FlatStyle = b.Image != null ? FlatStyle.Standard : FlatStyle.System;
-                b.UseVisualStyleBackColor = true;
-                b.ForeColor = ChipText;
-            }
-        }
 
         // Recursive: called from a dialog's OnLoad, after every control exists.
         // Gray labels are muted on purpose and keep their own color.
@@ -444,8 +472,7 @@ namespace Polyclicker
         {
             foreach (Control c in parent.Controls)
             {
-                if (c is Button) Style((Button)c);
-                else if (c is HotkeyBox)
+                if (c is HotkeyBox)
                 {
                     c.BackColor = FieldBack;
                     c.ForeColor = FieldText;
@@ -453,17 +480,9 @@ namespace Polyclicker
                 }
                 else if (c is TextBox || c is ListBox)
                 {
-                    c.BackColor = Dark ? FieldBack : Color.White;
+                    c.BackColor = FieldBack;
                     c.ForeColor = FieldText;
-                    var tb = c as TextBox;
-                    if (tb != null && Dark) tb.BorderStyle = BorderStyle.FixedSingle;
                     if (c is ListBox) StyleScrollbars(c);
-                }
-                else if (c is LinkLabel)
-                {
-                    var l = (LinkLabel)c;
-                    l.LinkColor = ReadyBlue;
-                    l.ActiveLinkColor = RunGreen;
                 }
                 else if (c is Label)
                 {
@@ -480,7 +499,7 @@ namespace Polyclicker
                     c.Invalidate();
                 }
                 else if (c is CheckBox || c is RadioButton)
-                    c.ForeColor = "gated".Equals(c.Tag) ? DimText : FormText;
+                    c.ForeColor = FormText;
                 else if (c is RadioDot) c.Invalidate();   // reads Theme live
                 ApplyChildren(c);
             }
@@ -607,6 +626,89 @@ namespace Polyclicker
         // wears a glowing white hat.
         [DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
+
+        // --- cached drawing objects -------------------------------------------
+        // A paint of a dozen cards creates and destroys hundreds of GDI+
+        // brushes and pens; each is a native object with real setup cost.
+        // The colours come from a small fixed palette, so they are made once
+        // and kept. Only for objects nobody mutates - a pen that gets a dash
+        // style or a cap set is still created at the call site.
+        static readonly Dictionary<int, SolidBrush> brushes = new Dictionary<int, SolidBrush>();
+        static readonly Dictionary<long, Pen> pens = new Dictionary<long, Pen>();
+
+        public static SolidBrush Brush(Color c)
+        {
+            SolidBrush b;
+            int key = c.ToArgb();
+            if (!brushes.TryGetValue(key, out b)) brushes[key] = b = new SolidBrush(c);
+            return b;
+        }
+
+        public static Pen Pen(Color c, float width)
+        {
+            Pen p;
+            long key = ((long)(uint)c.ToArgb() << 16) | (long)(width * 100);
+            if (!pens.TryGetValue(key, out p)) pens[key] = p = new Pen(c, width);
+            return p;
+        }
+
+        public static Pen Pen(Color c) { return Pen(c, 1f); }
+
+        // --- rounded boxes --------------------------------------------------------
+        // The one way a field, chip or card body is drawn. The path is built
+        // once per (width, height, radius) at the origin and reused under a
+        // translation: a dozen cards share a handful of shapes, so a paint
+        // that used to build and free hundreds of paths now builds none.
+        // Antialiased when crisp; the Fast (mid-drag) mode drops that.
+        static readonly Dictionary<long, System.Drawing.Drawing2D.GraphicsPath> boxPaths =
+            new Dictionary<long, System.Drawing.Drawing2D.GraphicsPath>();
+
+        // The same box through plain GDI, for a drag frame: no path, no
+        // antialiasing, a cached native brush and pen, on a device context
+        // the caller checked out once for the whole paint
+        [DllImport("gdi32.dll")] static extern bool RoundRect(IntPtr hdc, int l, int t, int r, int b, int w, int h);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateSolidBrush(int rgb);
+        [DllImport("gdi32.dll")] static extern IntPtr CreatePen(int style, int width, int rgb);
+        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+        static readonly Dictionary<int, IntPtr> gdiBrushes = new Dictionary<int, IntPtr>();
+        static readonly Dictionary<int, IntPtr> gdiPens = new Dictionary<int, IntPtr>();
+
+        static int ColorRef(Color c) { return c.R | (c.G << 8) | (c.B << 16); }
+
+        public static void GdiRoundedBox(IntPtr hdc, Rectangle r, int rad, Color fill, Color line)
+        {
+            IntPtr hb, hp;
+            int fk = ColorRef(fill), lk = ColorRef(line);
+            if (!gdiBrushes.TryGetValue(fk, out hb)) gdiBrushes[fk] = hb = CreateSolidBrush(fk);
+            if (!gdiPens.TryGetValue(lk, out hp)) gdiPens[lk] = hp = CreatePen(0, 1, lk);
+            IntPtr ob = SelectObject(hdc, hb), op = SelectObject(hdc, hp);
+            RoundRect(hdc, r.X, r.Y, r.Right + 1, r.Bottom + 1, rad * 2, rad * 2);
+            SelectObject(hdc, ob);
+            SelectObject(hdc, op);
+        }
+
+        public static void RoundedBox(Graphics g, Rectangle r, int rad, Color fill, Color line)
+        {
+            long key = ((long)r.Width << 40) | ((long)r.Height << 16) | (long)(uint)rad;
+            // Chips and fields repeat; a card body's width follows the window
+            // and would fill the cache with one-frame shapes during a drag
+            bool keep = r.Width <= 200;
+            System.Drawing.Drawing2D.GraphicsPath path = null;
+            if (!keep || !boxPaths.TryGetValue(key, out path))
+            {
+                if (keep && boxPaths.Count > 400) { foreach (var p in boxPaths.Values) p.Dispose(); boxPaths.Clear(); }
+                path = RoundPath(new Rectangle(0, 0, r.Width, r.Height), rad);
+                if (keep) boxPaths[key] = path;
+            }
+            var prev = g.SmoothingMode;
+            g.SmoothingMode = Glyphs.Mode;
+            g.TranslateTransform(r.X, r.Y);
+            g.FillPath(Brush(fill), path);
+            g.DrawPath(Pen(line), path);
+            g.TranslateTransform(-r.X, -r.Y);
+            g.SmoothingMode = prev;
+            if (!keep) path.Dispose();
+        }
 
         // --- rounded corners ----------------------------------------------------
 

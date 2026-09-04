@@ -55,11 +55,24 @@ namespace Polyclicker
         {
             cfg = AppConfig.Load();
             Theme.Dark = Theme.ResolveDark(cfg.ThemeMode);
+            // Before any font or control exists: the size setting feeds
+            // every layout number and the cached fonts. POLYCLICKER_UISCALE
+            // (a percentage) overrides it - the harness renders a 150%
+            // layout on a 100% display that way, and it's handy for support.
+            int envPct;
+            Theme.UserScale = int.TryParse(Environment.GetEnvironmentVariable("POLYCLICKER_UISCALE"),
+                                           out envPct) && envPct > 0
+                            ? envPct / 100f : cfg.UiScale / 100f;
+            Theme.Zoom = ZoomStep;
 
             Text = "Polyclicker";
-            DoubleBuffered = true;
+            // Not double-buffered: the client area is covered by children
+            // that buffer themselves, and a form-sized buffer cost a fixed
+            // ~0.6 ms on every size tick for the sliver of title band it
+            // painted. The class brush keeps enlargement from flashing black.
+            DoubleBuffered = false;
             Font = Theme.UIFont;
-            MinimumSize = new Size(CardSurface.MinWidth + 60, 300);
+            MinimumSize = new Size(CardSurface.MinWidth + Theme.S(60), Theme.S(300));
             StartPosition = FormStartPosition.Manual;
             BuildChrome();
             ApplyTheme();
@@ -129,6 +142,7 @@ namespace Polyclicker
 
             FormClosing += delegate { Log.Line("clean exit"); SavePlacement(); cfg.Save(); };
             FormClosed += delegate { Hotkeys.Uninstall(); Engine.Shutdown(); tray.Visible = false; };
+
         }
 
         // --- chrome ---------------------------------------------------------
@@ -138,15 +152,15 @@ namespace Polyclicker
             // A Label draws its Image under its text, so the mouse mark is a
             // proper PictureBox beside the title instead
             titleIcon = new PictureBox();
-            titleIcon.Size = new Size(28, 28);
-            titleIcon.Location = new Point(12, 9);
+            titleIcon.Size = new Size(Theme.S(28), Theme.S(28));
+            titleIcon.Location = new Point(Theme.S(12), Theme.S(9));
             titleIcon.SizeMode = PictureBoxSizeMode.Zoom;
 
             titleLabel = new Label();
             titleLabel.Text = "Polyclicker";
             titleLabel.Font = Theme.TitleFont;
             titleLabel.AutoSize = true;
-            titleLabel.Location = new Point(46, 9);
+            titleLabel.Location = new Point(Theme.S(46), Theme.S(9));
 
             // Just a quiet gray chip, top right - rounded like every other
             // button, no text; the hotkey hints live in Settings, where they
@@ -154,8 +168,7 @@ namespace Polyclicker
             settingsBtn = new ChipButton();
             settingsBtn.Kind = "gear";
             settingsBtn.Style = delegate { return Theme.NeutralChip; };
-            settingsBtn.Size = new Size(28, 28);
-            settingsBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            settingsBtn.Size = new Size(Theme.S(28), Theme.S(28));
             settingsBtn.Click += delegate { ShowSettings(); };
             tips.SetToolTip(settingsBtn, "Settings");
 
@@ -175,7 +188,7 @@ namespace Polyclicker
                     Engine.Stop(i);
                 gateActive.Remove(i);   // the edit may have been the gate
                 SaveSoon();
-                surface.RefreshStatus(i, Engine.IsRunning(i), Engine.ActualCps(i));
+                RefreshCard(i);
             };
             surface.RemoveClicked += RemoveCard;
             surface.DuplicateClicked += DuplicateCard;
@@ -187,7 +200,7 @@ namespace Polyclicker
                 SlotConfig s = surface.CfgAt(i);
                 SpotDot.Pop(s.X, s.Y);
             };
-            surface.RenameMacroClicked += RenameMacro;
+            surface.EditMacroClicked += EditMacro;
             surface.DeleteMacroClicked += DeleteMacro;
             surface.ColorClicked += ShowColorMenu;
             // Reordering already moved the surface's card; keep the config,
@@ -204,9 +217,12 @@ namespace Polyclicker
                 SaveSoon();
             };
 
-            strip = new Panel();
-            strip.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-            strip.Height = 52;
+            // No anchors anywhere in the main window: Relayout positions
+            // everything itself in one pass, so the layout engine has nothing
+            // to do on top of it (each anchored control cost a second pass
+            // per size tick)
+            strip = new Strip();
+            strip.Height = Theme.S(52);
 
             addBtn = StripButton("plus", "Add clicker", delegate { AddCard(new SlotConfig(), true); });
             stopAllBtn = StripButton("stop", "Stop all", delegate { StopEverything(); });
@@ -216,7 +232,7 @@ namespace Polyclicker
             killBtn = new ChipButton();
             killBtn.Kind = "toggle-on";
             killBtn.Style = delegate { return killActive ? Theme.RemoveChip : Theme.NeutralChip; };
-            killBtn.Size = new Size(38, 32);
+            killBtn.Size = new Size(Theme.S(38), Theme.S(32));
             tips.SetToolTip(killBtn, "Suspend every hotkey at once (" + HotkeyParser.Parse(cfg.KillSwitchKey) + ")");
             killBtn.Click += delegate { ToggleKill(); };
 
@@ -229,7 +245,6 @@ namespace Polyclicker
 
             saveProfBtn = StripButton("save", "Save profile", delegate { SaveProfileAs(); });
             delProfBtn = StripButton("trash", "Delete profile", delegate { DeleteProfile(); });
-            saveProfBtn.Anchor = delProfBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
 
             strip.Controls.AddRange(new Control[] { addBtn, stopAllBtn, killBtn,
                                                     profileCombo,
@@ -276,7 +291,7 @@ namespace Polyclicker
             var b = new ChipButton();
             b.Kind = kind;
             b.Style = delegate { return Theme.NeutralChip; };
-            b.Size = new Size(38, 32);
+            b.Size = new Size(Theme.S(38), Theme.S(32));
             b.Click += onClick;
             tips.SetToolTip(b, tip);
             return b;
@@ -289,6 +304,9 @@ namespace Polyclicker
             string recShown = cfg.RecordKey.Trim().Length > 0
                             ? HotkeyParser.Parse(cfg.RecordKey).ToString() : "the record hotkey";
             // The theme choice applies the moment it's clicked - live, not on OK
+            // The zoom keys work under the dialog too, so only a change the
+            // user made in its dropdown counts on OK
+            int shownScale = cfg.UiScale;
             using (var d = new SettingsDialog(cfg, recShown, delegate(string mode)
             {
                 cfg.ThemeMode = mode;
@@ -301,6 +319,7 @@ namespace Polyclicker
                 cfg.StopAllKey = d.StopAllKey;
                 cfg.KillSwitchKey = d.KillKey;
                 cfg.RecordKey = d.RecordKey;
+                if (d.UiScale != shownScale) SetUiScale(d.UiScale);
                 Renumber();           // the record key is quoted in status lines
                 SaveSoon();
             }
@@ -396,41 +415,91 @@ namespace Polyclicker
 
         // --- macro management ------------------------------------------------
 
-        void RenameMacro(int idx)
+        // Open editors, one per take, keyed by full path - clicking edit on a
+        // take that is already open fronts its window instead of forking a
+        // second view of the same file
+        readonly Dictionary<string, MacroEditorDialog> editors =
+            new Dictionary<string, MacroEditorDialog>(StringComparer.OrdinalIgnoreCase);
+
+        void EditMacro(int idx)
         {
-            string cur = surface.CfgAt(idx).Macro.Trim();
-            if (cur.Length == 0) { surface.Notice(idx, "No macro selected to rename."); return; }
-            string oldBase = cur.EndsWith(".macro") ? cur.Substring(0, cur.Length - 6) : cur;
-
-            using (var p = new TextPrompt("Rename macro", "New name for this macro:", oldBase))
+            SlotConfig slot = surface.CfgAt(idx);
+            string cur = slot.Macro.Trim();
+            if (cur.Length == 0)
             {
-                if (p.ShowDialog(this) != DialogResult.OK) return;
-                string newBase = MacroFile.Sanitize(p.Value);
-                if (newBase.Length == 0 || newBase == oldBase) return;
-
-                string src = Path.Combine(AppConfig.MacroDir, cur);
-                string dst = Path.Combine(AppConfig.MacroDir, newBase + ".macro");
-                if (File.Exists(dst))
+                // No take on the card: the editor can build one from nothing
+                using (var p = new TextPrompt("New macro", "Name for the new macro:", ""))
                 {
-                    MessageBox.Show(this, "A macro called '" + newBase + "' already exists.",
-                                    "Rename macro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
+                    if (p.ShowDialog(this) != DialogResult.OK) return;
+                    string name = MacroFile.Sanitize(p.Value);
+                    if (name.Length == 0) return;
+                    string np = MacroFile.UniquePath(AppConfig.MacroDir, name);
+                    try { MacroFile.Save(np, new Ev[0], 1, false, 0, 0, 0, 0); }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "Couldn't create it:\n\n" + ex.Message,
+                                        "New macro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                    cur = Path.GetFileName(np);
+                    slot.Macro = cur;
+                    RefreshMacroLists();
+                    surface.Reflow();
+                    SaveSoon();
                 }
-                try { File.Move(src, dst); }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(this, "Couldn't rename it:\n\n" + ex.Message,
-                                    "Rename macro", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
+            }
+            string path = Path.Combine(AppConfig.MacroDir, cur);
+            if (!File.Exists(path)) { surface.Notice(idx, "That macro file is missing."); return; }
 
-                // Any card pointing at the old name has to follow it, or it
-                // would quietly lose its selection when the list is rebuilt
-                foreach (SlotConfig s in cfg.Slots)
-                    if (s.Macro.Trim() == cur) s.Macro = newBase + ".macro";
-                RefreshMacroLists();
-                surface.Reflow();
-                SaveSoon();
+            MacroEditorDialog open;
+            if (editors.TryGetValue(path, out open)) { open.Activate(); return; }
+
+            // Editing a take that is mid-playback would be editing under the
+            // engine's feet; whatever is playing stops first
+            foreach (int m in Engine.RunningMacros()) Engine.Stop(m);
+            try
+            {
+                var d = new MacroEditorDialog(path, cur, delegate(string oldName, string newName)
+                {
+                    // Renamed inside the editor: cards pointing at the old
+                    // name follow it, and the open-editor table re-keys
+                    foreach (SlotConfig s in cfg.Slots)
+                        if (s.Macro.Trim() == oldName) s.Macro = newName;
+                    string oldP = Path.Combine(AppConfig.MacroDir, oldName);
+                    MacroEditorDialog dd;
+                    if (editors.TryGetValue(oldP, out dd))
+                    {
+                        editors.Remove(oldP);
+                        editors[Path.Combine(AppConfig.MacroDir, newName)] = dd;
+                    }
+                    RefreshMacroLists();
+                    surface.Reflow();
+                    SaveSoon();
+                });
+                editors[path] = d;
+                d.FormClosed += delegate
+                {
+                    editors.Remove(d.TakePath);
+                    RefreshMacroLists();    // saves and copies are new list state
+                    surface.Reflow();
+                };
+                // Modeless: Show ignores CenterParent, so center on this
+                // window by hand - the editor is usually wider than the card
+                // list, so keep the result on the same screen rather than
+                // letting the centering math push it off an edge
+                d.StartPosition = FormStartPosition.Manual;
+                Rectangle wa = Screen.FromControl(this).WorkingArea;
+                int dx = Location.X + (Width - d.Width) / 2;
+                int dy = Location.Y + (Height - d.Height) / 2;
+                d.Location = new Point(
+                    Math.Max(wa.Left, Math.Min(dx, wa.Right - d.Width)),
+                    Math.Max(wa.Top, Math.Min(dy, wa.Bottom - d.Height)));
+                d.Show(this);
+            }
+            catch (Exception ex)    // locked or unreadable file
+            {
+                MessageBox.Show(this, "Couldn't open it:\n\n" + ex.Message,
+                                "Edit macro", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -445,9 +514,8 @@ namespace Polyclicker
             string also = users > 1
                 ? "\n\nIt is used by " + users + " auto-clickers, which will have no macro to play."
                 : "";
-            if (MessageBox.Show(this,
-                    "Delete '" + cur + "'?" + also + "\n\nThe file is removed from the Macros folder.",
-                    "Delete macro", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            if (!ConfirmDialog.Ask(this, "Delete macro",
+                    "Delete '" + cur + "'?" + also + "\n\nThe file is removed from the Macros folder.", "Delete", true))
                 return;
 
             try { File.Delete(Path.Combine(AppConfig.MacroDir, cur)); }
@@ -477,9 +545,8 @@ namespace Polyclicker
                 if (name.Length == 0) return false;
 
                 string path = Path.Combine(AppConfig.ProfileDir, name + ".ini");
-                if (File.Exists(path) && MessageBox.Show(this,
-                        "'" + name + "' already exists. Overwrite it?", "Save profile",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                if (File.Exists(path) && !ConfirmDialog.Ask(this, "Save profile",
+                    "'" + name + "' already exists. Overwrite it?", "Overwrite", false))
                     return false;
                 try
                 {
@@ -522,62 +589,25 @@ namespace Polyclicker
             return mine != AppConfig.Fingerprint(pristine);
         }
 
-        // Returns true to go ahead with whatever would discard the working set.
-        // Silent when there is nothing at stake - the whole point is not making
-        // someone work out for themselves whether they are about to lose work.
-        bool OkToDiscard(string doingWhat)
+        // No "save before switching?" question: switching profiles discards
+        // the working set's differences from its profile, and the title bar's
+        // asterisk is the warning. Saving is the save button.
+        void UpdateTitle()
         {
-            if (!HasUnsavedChanges()) return true;
-            string subject = cfg.CurrentProfile.Length > 0
-                ? "'" + cfg.CurrentProfile + "' has unsaved changes."
-                : "These auto-clickers aren't saved to a profile.";
-            DialogResult r = MessageBox.Show(this,
-                subject + "\n\nSave them before " + doingWhat + "?"
-                + "\n\nYes - save, then continue"
-                + "\nNo - continue anyway, discarding them"
-                + "\nCancel - stay here",
-                "Unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-            if (r == DialogResult.Cancel) return false;
-            if (r == DialogResult.No) return true;
-            return SaveCurrent();          // Yes: only continue if it saved
-        }
-
-        // Write straight back to the profile in use; ask for a name when there
-        // isn't one yet.
-        bool SaveCurrent()
-        {
-            if (cfg.CurrentProfile.Length == 0) return SaveProfileAs();
-            try
-            {
-                Directory.CreateDirectory(AppConfig.ProfileDir);
-                cfg.WriteSlotsTo(Path.Combine(AppConfig.ProfileDir, cfg.CurrentProfile + ".ini"));
-                return true;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, "Couldn't save '" + cfg.CurrentProfile + "':\n\n" + ex.Message,
-                                "Save profile", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
+            Text = "Polyclicker"
+                 + (cfg.CurrentProfile.Length > 0 ? " - " + cfg.CurrentProfile : "")
+                 + (HasUnsavedChanges() ? " *" : "");
         }
 
         // Put the dropdown back on the profile actually in use - after a
         // cancelled action it must not sit on the entry that was declined.
-        void RestoreProfileSelection()
-        {
-            profileCombo.Text = cfg.CurrentProfile.Length > 0
-                             && profileCombo.Items.Contains(cfg.CurrentProfile)
-                              ? cfg.CurrentProfile : "";
-        }
-
         void DeleteProfile()
         {
             string name = profileCombo.Text;
             if (name.Length == 0 || name == NewProfileItem) return;
-            if (MessageBox.Show(this,
+            if (!ConfirmDialog.Ask(this, "Delete profile",
                     "Delete the profile '" + name + "'?\n\nThe auto-clickers currently"
-                    + " loaded are not affected.",
-                    "Delete profile", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                    + " loaded are not affected.", "Delete", true))
                 return;
             try { File.Delete(Path.Combine(AppConfig.ProfileDir, name + ".ini")); }
             catch (Exception ex)
@@ -672,35 +702,208 @@ namespace Polyclicker
             catch { return null; }
         }
 
+        public static long ResizeTicks;         // perf harness counter
+
+        // Nothing in the main window is anchored or docked - Relayout places
+        // every child itself - so the layout engine's pass over the children
+        // on every size tick would only confirm what it finds. Skipped.
+        protected override void OnLayout(LayoutEventArgs e)
+        {
+            if (surface == null) base.OnLayout(e);
+        }
+
         protected override void OnResize(EventArgs e)
         {
-            base.OnResize(e);
-            if (surface == null) return;
-            int top = 46;
-            surface.SetBounds(0, top, ClientSize.Width, Math.Max(60, ClientSize.Height - top - strip.Height));
-            strip.SetBounds(0, ClientSize.Height - strip.Height, ClientSize.Width, strip.Height);
-            settingsBtn.Location = new Point(ClientSize.Width - settingsBtn.Width - 12, 8);
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            try { Relayout(e); }
+            finally { ResizeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; }
+        }
 
+        public static long ResizeBaseTicks, ResizeStripTicks, ResizeSurfaceTicks, ResizeStripBoundsTicks, ResizeGearTicks;   // perf harness
+
+        void Relayout(EventArgs e)
+        {
+            long a = System.Diagnostics.Stopwatch.GetTimestamp();
+            base.OnResize(e);
+            long b = System.Diagnostics.Stopwatch.GetTimestamp();
+            ResizeBaseTicks += b - a;
+            if (surface == null) return;
+            // One layout pass for the lot: each SetBounds below would
+            // otherwise make the parent lay out again
+            SuspendLayout();
+            try { Place(); }
+            finally { ResumeLayout(false); }
+        }
+
+                void Place()
+        {
+            long c = System.Diagnostics.Stopwatch.GetTimestamp();
+            int w = ClientSize.Width, top = Theme.S(46);
             // One rhythm across the strip: 12 px edges, 8 px gaps, everything
             // 32 tall and vertically centered
-            int y = (strip.Height - 32) / 2;
+            int y = (strip.Height - Theme.S(32)) / 2;
             // The three action chips run left to right on a 46 px pitch
             // (38 wide, 8 apart); the profile section starts after a wider
             // gap, which is what separates the two groups.
             // GroupGap and the combo gap are measured to the glyphs, not the
             // label box: an AutoSize Label carries about 3 px of lead-in and 6 of
             // trail, so the raw numbers land ~9 px wider than they read.
-            const int Edge = 12, ChipPitch = 46, GroupGap = 8;
-            addBtn.Location = new Point(Edge, y);
-            stopAllBtn.Location = new Point(Edge + ChipPitch, y);
-            killBtn.Location = new Point(Edge + ChipPitch * 2, y);
-            delProfBtn.Location = new Point(strip.Width - 50, y);
-            saveProfBtn.Location = new Point(strip.Width - 96, y);
+            int Edge = Theme.S(12), ChipPitch = Theme.S(46), GroupGap = Theme.S(8);
             int comboX = Edge + ChipPitch * 2 + killBtn.Width + GroupGap;
+            // The two panes move on their own: batching them with the chips
+            // was tried and measured slower (a DeferWindowPos transaction
+            // can't mix parents, and one per parent cost more than the two
+            // direct calls). The strip's buttons, which share a parent, go
+            // in one window-manager transaction; each SetBounds would be a
+            // synchronous round trip on its own. WinForms still learns the
+            // new bounds from WM_WINDOWPOSCHANGED.
+            surface.SetBounds(0, top, w, Math.Max(Theme.S(60), ClientSize.Height - top - strip.Height));
+            long t1 = System.Diagnostics.Stopwatch.GetTimestamp(); ResizeSurfaceTicks += t1 - c;
+            strip.SetBounds(0, ClientSize.Height - strip.Height, w, strip.Height);
+            long t2 = System.Diagnostics.Stopwatch.GetTimestamp(); ResizeStripBoundsTicks += t2 - t1;
+            settingsBtn.Location = new Point(w - settingsBtn.Width - Theme.S(12), Theme.S(8));
+            long t3 = System.Diagnostics.Stopwatch.GetTimestamp(); ResizeGearTicks += t3 - t2;
+            var batch = new Batch(6);
+            batch.Put(addBtn, Edge, y);
+            batch.Put(stopAllBtn, Edge + ChipPitch, y);
+            batch.Put(killBtn, Edge + ChipPitch * 2, y);
+            batch.Put(delProfBtn, w - Theme.S(50), y);
+            batch.Put(saveProfBtn, w - Theme.S(96), y);
             // Same 32 as the chips beside it: at 26 it read as a thin slot
             // wedged between full-height buttons.
-            profileCombo.SetBounds(comboX, y, Math.Max(80, strip.Width - 104 - comboX), 32);
+            batch.Size(profileCombo, comboX, y, Math.Max(Theme.S(80), w - Theme.S(104) - comboX), Theme.S(32));
+            batch.Commit();
+            ResizeStripTicks += System.Diagnostics.Stopwatch.GetTimestamp() - c;
             // The cards repaint themselves; there is nothing to schedule here
+        }
+
+        // The strip's buttons are placed by Place, so the panel's own layout
+        // pass on every size tick would only rediscover the same positions
+        sealed class Strip : Panel
+        {
+            protected override void OnLayout(LayoutEventArgs e) { }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr BeginDeferWindowPos(int n);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr DeferWindowPos(IntPtr h, IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool EndDeferWindowPos(IntPtr h);
+
+        // Positions that haven't changed are skipped; the rest go in one
+        // DeferWindowPos transaction. Falls back to plain SetBounds for a
+        // control that has no window yet.
+        struct Batch
+        {
+            IntPtr h;
+            const uint NoZ = 0x0004 | 0x0010 | 0x0200;    // NOZORDER | NOACTIVATE | NOOWNERZORDER
+            public Batch(int n) { h = BeginDeferWindowPos(n); }
+            public void Put(Control c, int x, int y)
+            {
+                if (c.Left == x && c.Top == y) return;
+                if (h == IntPtr.Zero || !c.IsHandleCreated) { c.Location = new Point(x, y); return; }
+                if (!Defer(c, x, y, 0, 0, NoZ | 0x0001)) c.Location = new Point(x, y);   // NOSIZE
+            }
+            public void Size(Control c, int x, int y, int w, int hgt)
+            {
+                if (c.Left == x && c.Top == y && c.Width == w && c.Height == hgt) return;
+                if (h == IntPtr.Zero || !c.IsHandleCreated) { c.SetBounds(x, y, w, hgt); return; }
+                if (!Defer(c, x, y, w, hgt, NoZ)) c.SetBounds(x, y, w, hgt);
+            }
+            // A refused window (wrong parent) ends the transaction; whatever was
+            // already in it is lost, so a refusal is logged rather than hidden
+            bool Defer(Control c, int x, int y, int w, int hgt, uint flags)
+            {
+                IntPtr n = DeferWindowPos(h, c.Handle, IntPtr.Zero, x, y, w, hgt, flags);
+                if (n != IntPtr.Zero) { h = n; return true; }
+                Log.Line("DeferWindowPos refused " + c.Name + "; batch dropped");
+                h = IntPtr.Zero;
+                return false;
+            }
+            public void Commit() { if (h != IntPtr.Zero) EndDeferWindowPos(h); }
+        }
+
+        // --- DPI ------------------------------------------------------------
+        // Per-monitor awareness: Windows reports the DPI of whichever monitor
+        // the window is on, and the window redraws itself at that scale
+        // instead of being stretched. One path serves both ways it changes -
+        // dragged to another monitor, or the display scale changed while the
+        // app runs - and the case a fresh window lands on a monitor whose
+        // scale differs from the system's, which arrives as no message at
+        // all and has to be asked for.
+        const int WM_DPICHANGED = 0x02E0;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct DpiRect { public int L, T, R, B; }
+
+        void ApplyDpi(int dpi, Rectangle? suggested)
+        {
+            float before = Theme.Scale;
+            Theme.DpiScale = dpi / 96f;
+            AfterScaleChange(before, suggested);
+        }
+
+        // Zoom - Ctrl+= / Ctrl+- / Ctrl+0, or the Settings value - is the
+        // same rescale with the user factor changed instead of the DPI, plus
+        // persisting it and carrying any open editors along
+        static readonly int[] ZoomSteps = { 50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200 };
+
+        public void ZoomStep(int dir)
+        {
+            int cur = cfg.UiScale, next = 100;
+            if (dir > 0) { next = cur; foreach (int z in ZoomSteps) if (z > cur) { next = z; break; } }
+            else if (dir < 0) { next = cur; for (int i = ZoomSteps.Length - 1; i >= 0; i--) if (ZoomSteps[i] < cur) { next = ZoomSteps[i]; break; } }
+            SetUiScale(next);
+        }
+
+        public void SetUiScale(int pct)
+        {
+            pct = Math.Max(50, Math.Min(300, pct));
+            if (pct != cfg.UiScale)
+            {
+                float before = Theme.Scale;
+                cfg.UiScale = pct;
+                Theme.UserScale = pct / 100f;
+                AfterScaleChange(before, null);
+                foreach (MacroEditorDialog d in editors.Values) d.RescaleBy(Theme.Scale / before);
+                SaveSoon();
+            }
+            CursorToast.Pop("Zoom " + pct + "%");
+        }
+
+        void AfterScaleChange(float before, Rectangle? suggested)
+        {
+            float ratio = Theme.Scale / before;
+            if (Math.Abs(ratio - 1f) < 0.001f) return;
+            Theme.ResetFonts();
+            Font = Theme.UIFont;                  // the strip and cards inherit
+            titleLabel.Font = Theme.TitleFont;
+            SizeChrome();
+            MinimumSize = new Size(CardSurface.MinWidth + Theme.S(60), Theme.S(300));
+            if (suggested.HasValue) Bounds = suggested.Value;
+            else Size = new Size((int)Math.Round(Width * ratio), (int)Math.Round(Height * ratio));
+            surface.Reflow();
+            OnResize(EventArgs.Empty);
+            Invalidate(true);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (Theme.ZoomKey(keyData)) return true;
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        // The chrome's fixed sizes, in the current scale
+        void SizeChrome()
+        {
+            titleIcon.Size = new Size(Theme.S(28), Theme.S(28));
+            titleIcon.Location = new Point(Theme.S(12), Theme.S(9));
+            titleLabel.Location = new Point(Theme.S(46), Theme.S(9));
+            settingsBtn.Size = new Size(Theme.S(28), Theme.S(28));
+            strip.Height = Theme.S(52);
+            foreach (ChipButton b in new ChipButton[] { addBtn, stopAllBtn, killBtn, saveProfBtn, delProfBtn })
+                b.Size = new Size(Theme.S(38), Theme.S(32));
         }
 
         // --- cards ----------------------------------------------------------
@@ -715,11 +918,9 @@ namespace Polyclicker
 
         void RemoveCard(int i)
         {
-            if (MessageBox.Show(this,
+            if (!ConfirmDialog.Ask(this, "Remove auto-clicker",
                     "Remove " + Label(i) + "?\n\nIts settings are discarded. Any recorded"
-                    + " macro it used stays in the Macros folder.",
-                    "Remove auto-clicker", MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning) != DialogResult.Yes)
+                    + " macro it used stays in the Macros folder.", "Remove", true))
                 return;
             Engine.Stop(i);
             Engine.ShiftForRemoval(i);      // running slots above follow their cards down
@@ -756,8 +957,7 @@ namespace Polyclicker
             gateActive.Clear();
             flickFindAt.Clear();
             lastFg = IntPtr.Zero;
-            for (int i = 0; i < surface.Count; i++)
-                surface.RefreshStatus(i, Engine.IsRunning(i), Engine.ActualCps(i));
+            for (int i = 0; i < surface.Count; i++) RefreshCard(i);
             surface.Invalidate();       // placeholder names carry the number
         }
 
@@ -847,10 +1047,8 @@ namespace Polyclicker
         {
             for (int i = 0; i < surface.Count; i++)
             {
-                if (Engine.IsRunning(i))
-                    surface.RefreshStatus(i, true, Engine.ActualCps(i));
-                else if (surface.NoticeExpired(i))
-                    surface.RefreshStatus(i, false, 0);
+                if (Engine.IsRunning(i)) RefreshCard(i);
+                else if (surface.NoticeExpired(i)) surface.RefreshStatus(i, false, 0);
             }
             if (Recorder.Recording && recordIndex >= 0 && recordIndex < surface.Count)
                 surface.SetRecording(recordIndex, true, Recorder.EventCount);
@@ -871,9 +1069,15 @@ namespace Polyclicker
                     if (wins == null) wins = WindowMatcher.OpenWindows(IntPtr.Zero);
                     missing = !WindowMatcher.AnyOpen(s.WinTitle, wins);
                 }
-                if (surface.SetGateMissing(i, missing))
-                    surface.RefreshStatus(i, Engine.IsRunning(i), Engine.ActualCps(i));
+                if (surface.SetGateMissing(i, missing)) RefreshCard(i);
             }
+        }
+
+        // The card's status line from what the engine is doing right now
+        void RefreshCard(int i)
+        {
+            surface.RefreshStatus(i, Engine.IsRunning(i), Engine.ActualCps(i),
+                                  Engine.PendingSeconds(i));
         }
 
         // A gated card's window comes and goes as the user alt-tabs, so the
@@ -1223,6 +1427,10 @@ namespace Polyclicker
             // the DWM attributes (dark caption, palette caption tint) need a
             // real window to stick to
             Theme.DarkTitleBar(this);
+            // Landed on a monitor whose scale differs from the system's: no
+            // WM_DPICHANGED comes for that, so ask
+            int dpi = Theme.WindowDpi(Handle);
+            if (dpi > 0 && Math.Abs(dpi / 96f - Theme.DpiScale) > 0.001f) ApplyDpi(dpi, null);
         }
 
         // "System default" theme follows Windows live: flipping dark mode in
@@ -1231,6 +1439,21 @@ namespace Polyclicker
         const int WM_DWMCOLORIZATIONCOLORCHANGED = 0x0320;
         protected override void WndProc(ref Message m)
         {
+            // A frame drag: the cards paint cheap until it ends, then crisp
+            if (m.Msg == 0x0231) CardSurface.Interactive = true;            // WM_ENTERSIZEMOVE
+            else if (m.Msg == 0x0232)                                        // WM_EXITSIZEMOVE
+            {
+                CardSurface.Interactive = false;
+                if (surface != null) { Glyphs.Fast = false; surface.Invalidate(); strip.Invalidate(true); }
+            }
+            if (m.Msg == WM_DPICHANGED && surface != null)
+            {
+                int dpi = ((int)(long)m.WParam >> 16) & 0xFFFF;
+                var r = (DpiRect)System.Runtime.InteropServices.Marshal.PtrToStructure(m.LParam, typeof(DpiRect));
+                ApplyDpi(dpi, new Rectangle(r.L, r.T, r.R - r.L, r.B - r.T));
+                m.Result = IntPtr.Zero;
+                return;
+            }
             if (m.Msg == WM_SETTINGCHANGE && cfg != null && cfg.ThemeMode == "system")
             {
                 bool dark = Theme.ResolveDark("system");
@@ -1446,6 +1669,7 @@ namespace Polyclicker
                 profileCombo.Invalidate();
             }
             catch { }
+            UpdateTitle();
         }
 
         void OnProfileChosen(string name)
@@ -1453,8 +1677,6 @@ namespace Polyclicker
             if (name == null || name.Length == 0) return;
             if (name == NewProfileItem)
             {
-                // Nothing at stake, no question asked - it just starts fresh
-                if (!OkToDiscard("starting fresh")) { RestoreProfileSelection(); return; }
                 Engine.StopAll();
                 // Same as ApplyProfile: a take left rolling across the reset
                 // would keep recording the user's unrelated input and land it
@@ -1471,8 +1693,6 @@ namespace Polyclicker
             }
             string path = Path.Combine(AppConfig.ProfileDir, name + ".ini");
             if (!File.Exists(path)) { RefreshProfileList(""); return; }
-            // Loading over the top discards just as thoroughly as starting fresh
-            if (!OkToDiscard("loading '" + name + "'")) { RestoreProfileSelection(); return; }
             ApplyProfile(path);
             cfg.CurrentProfile = name;
             SaveSoon();
@@ -1491,7 +1711,9 @@ namespace Polyclicker
             {
                 saveTimer = new Timer();
                 saveTimer.Interval = 400;
-                saveTimer.Tick += delegate { saveTimer.Stop(); cfg.Save(); };
+                // Every edit passes through here, so the title's unsaved
+                // mark is refreshed on the same debounce as the config
+                saveTimer.Tick += delegate { saveTimer.Stop(); cfg.Save(); UpdateTitle(); };
             }
             saveTimer.Stop();
             saveTimer.Start();
@@ -1499,9 +1721,9 @@ namespace Polyclicker
 
         void RestorePlacement()
         {
-            int w = cfg.WinW > 0 ? cfg.WinW : 560;
-            int h = cfg.WinH > 0 ? cfg.WinH : 560;
-            ClientSize = new Size(Math.Max(MinimumSize.Width, w), Math.Max(300, h));
+            int w = cfg.WinW > 0 ? cfg.WinW : Theme.S(560);
+            int h = cfg.WinH > 0 ? cfg.WinH : Theme.S(560);
+            ClientSize = new Size(Math.Max(MinimumSize.Width, w), Math.Max(Theme.S(300), h));
             if (cfg.WinX != int.MinValue && OnAScreen(cfg.WinX, cfg.WinY))
                 Location = new Point(cfg.WinX, cfg.WinY);
             else

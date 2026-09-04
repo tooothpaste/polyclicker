@@ -29,7 +29,7 @@ namespace Polyclicker
         }
 
         readonly System.Windows.Forms.Timer life = new System.Windows.Forms.Timer();
-        const int R = 9;                        // dot radius in px
+        static int R { get { return Theme.S(9); } }   // dot radius in px
 
         SpotDot(int x, int y)
         {
@@ -100,12 +100,32 @@ namespace Polyclicker
 
         // follow: the toast rides along with the pointer - for the pick-
         // position countdown, where the user is aiming at the same time.
+        // A toast is decoration: whatever goes wrong in here must never take
+        // down the operation that wanted to show it. One escaped once - a
+        // disposed-toast throw surfaced as "Couldn't save it" on a save that
+        // had in fact succeeded.
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr GetForegroundWindow();
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(IntPtr h);
+
         public static void Pop(string text, int lifeMs, bool follow)
         {
             if (open != null) { try { open.Close(); } catch { } open = null; }
-            var t = new CursorToast(text, lifeMs, follow);
-            open = t;
-            t.Show();
+            try
+            {
+                // NOACTIVATE and ShowWithoutActivation notwithstanding, the
+                // toast has been observed holding activation when popped from
+                // inside a key handler - and then the user's next keystroke
+                // goes to a tooltip. If activation moved, put it back.
+                IntPtr fg = GetForegroundWindow();
+                var t = new CursorToast(text, lifeMs, follow);
+                open = t;
+                t.Show();
+                if (fg != IntPtr.Zero && GetForegroundWindow() == t.Handle)
+                    SetForegroundWindow(fg);
+            }
+            catch { open = null; }
         }
 
         readonly Timer life = new Timer();
@@ -122,13 +142,13 @@ namespace Polyclicker
 
             var l = new Label();
             l.AutoSize = true;
-            l.Font = new Font(Theme.UIFont.FontFamily, 9.75f);
+            l.Font = Theme.UIFont;
             l.ForeColor = Color.White;
             l.BackColor = BackColor;
             l.Text = text;
-            l.Location = new Point(12, 7);
+            l.Location = new Point(Theme.S(12), Theme.S(7));
             Controls.Add(l);
-            ClientSize = new Size(l.PreferredWidth + 24, l.PreferredHeight + 14);
+            ClientSize = new Size(l.PreferredWidth + Theme.S(24), l.PreferredHeight + Theme.S(14));
 
             Reposition();
             HandleCreated += delegate { Theme.RoundPopup(Handle); };
@@ -142,7 +162,12 @@ namespace Polyclicker
             }
 
             life.Interval = lifeMs;
-            life.Tick += delegate { life.Stop(); if (open == this) open = null; Close(); };
+            life.Tick += delegate
+            {
+                life.Stop();
+                if (open == this) open = null;
+                try { Close(); } catch { }
+            };
             life.Start();
         }
 
